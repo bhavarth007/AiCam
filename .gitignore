@@ -23,3 +23,6 @@ data/staff_photos/*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Tools
+tools/
