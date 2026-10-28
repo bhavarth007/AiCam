@@ -16,7 +16,7 @@ git push origin main
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Push failed! Please make sure your GitHub repo exists:
-    echo https://github.com/bhavarthhapani/AiCam
+    echo https://github.com/bhavarth007/AiCam
     echo If you have not created it yet, create an empty repo named "AiCam" on GitHub:
     echo https://github.com/new
 ) else (
