@@ -63,6 +63,8 @@ stream_manager.start(source_type="webcam")
 # Mount Static Files
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
+app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
 
 # ----------------- Video & Stream Endpoints -----------------
 
