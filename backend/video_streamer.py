@@ -82,10 +82,11 @@ class VideoStreamManager:
         print("[VideoStream] Live counting and video playback STARTED.")
 
     def stop_counting(self):
-        """Pauses video playback and suspends live AI line crossing counting."""
+        """Pauses video playback and suspends live AI line crossing counting and camera feed."""
         with self.lock:
             self.counting_active = False
             self.is_paused = True
+            self.current_detections = []
         print("[VideoStream] Live counting and video playback STOPPED/PAUSED.")
 
     def toggle_counting(self) -> bool:
@@ -176,12 +177,44 @@ class VideoStreamManager:
         while self.running:
             start_t = time.time()
 
-            # If video playback is paused on a video file, hold the current frame
-            if self.is_paused and self.source_type == "file" and self.current_frame is not None:
-                hud_frame = self.tracking_engine.draw_hud_overlay(self.current_frame, self.current_detections, is_counting=False)
+            # If video or counting is paused / stopped, do not show live camera
+            if self.is_paused or not self.counting_active:
+                h, w = 540, 960
+                standby_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                standby_frame[:] = (15, 23, 42)  # Dark slate background
+
+                # Subtle grid pattern
+                for x in range(0, w, 60):
+                    cv2.line(standby_frame, (x, 0), (x, h), (26, 36, 56), 1)
+                for y in range(0, h, 60):
+                    cv2.line(standby_frame, (0, y), (w, y), (26, 36, 56), 1)
+
+                cx, cy = w // 2, h // 2
+                card_w, card_h = 660, 270
+                x1, y1 = cx - card_w // 2, cy - card_h // 2
+                x2, y2 = cx + card_w // 2, cy + card_h // 2
+
+                # Center badge card
+                cv2.rectangle(standby_frame, (x1, y1), (x2, y2), (24, 32, 48), -1)
+                cv2.rectangle(standby_frame, (x1, y1), (x2, y2), (244, 63, 94), 2)
+
+                # Status icon & text
+                cv2.circle(standby_frame, (cx, y1 + 50), 18, (244, 63, 94), -1)
+                cv2.circle(standby_frame, (cx, y1 + 50), 8, (255, 255, 255), -1)
+
+                cv2.putText(standby_frame, "LIVE CAMERA & COUNTING STOPPED", (cx - 245, y1 + 115),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.82, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(standby_frame, "Camera feed is offline. Worker & visitor tracking is suspended.", (cx - 270, y1 + 160),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (148, 163, 184), 1, cv2.LINE_AA)
+                cv2.putText(standby_frame, "Click [Start Video & Counting] button below to resume.", (cx - 230, y1 + 195),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (52, 211, 153), 1, cv2.LINE_AA)
+
                 with self.lock:
-                    self.current_hud_frame = hud_frame
-                time.sleep(0.04)
+                    self.current_hud_frame = standby_frame
+                    self.fps = 0.0
+                    self.current_detections = []
+
+                time.sleep(0.08)
                 continue
 
             if self.cap and self.cap.isOpened():

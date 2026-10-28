@@ -205,34 +205,53 @@ function updateCountingStatusUI(isCounting) {
     const text = document.getElementById('countingStatusText');
     const btnStart = document.getElementById('btnStartCounting');
     const btnStop = document.getElementById('btnStopCounting');
+    const overlay = document.getElementById('cameraStoppedOverlay');
+    const headerTitle = document.getElementById('cameraCardHeaderTitle');
+    const pulseDot = document.getElementById('cameraPulseDot');
 
-    if (badge && text) {
-        if (isCounting) {
+    if (isCounting) {
+        if (overlay) overlay.style.display = 'none';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - REAL-TIME AI TRACKING FEED (LIVE)';
+        if (pulseDot) {
+            pulseDot.style.background = '#10b981';
+            pulseDot.style.boxShadow = '0 0 10px #10b981';
+            pulseDot.style.animation = 'pulseDot 1.5s infinite';
+        }
+        if (badge && text) {
             badge.style.background = 'rgba(16,185,129,0.15)';
             badge.style.borderColor = 'rgba(16,185,129,0.3)';
             badge.style.color = '#34d399';
             text.textContent = 'LIVE COUNTING ACTIVE';
-            if (btnStart) {
-                btnStart.style.opacity = '0.55';
-                btnStart.disabled = false;
-            }
-            if (btnStop) {
-                btnStop.style.opacity = '1.0';
-                btnStop.disabled = false;
-            }
-        } else {
+        }
+        if (btnStart) {
+            btnStart.style.opacity = '0.45';
+            btnStart.disabled = false;
+        }
+        if (btnStop) {
+            btnStop.style.opacity = '1.0';
+            btnStop.disabled = false;
+        }
+    } else {
+        if (overlay) overlay.style.display = 'flex';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - STREAM STOPPED (OFFLINE)';
+        if (pulseDot) {
+            pulseDot.style.background = '#f43f5e';
+            pulseDot.style.boxShadow = '0 0 8px #f43f5e';
+            pulseDot.style.animation = 'none';
+        }
+        if (badge && text) {
             badge.style.background = 'rgba(244,63,94,0.15)';
             badge.style.borderColor = 'rgba(244,63,94,0.3)';
             badge.style.color = '#fb7185';
-            text.textContent = 'COUNTING PAUSED';
-            if (btnStart) {
-                btnStart.style.opacity = '1.0';
-                btnStart.disabled = false;
-            }
-            if (btnStop) {
-                btnStop.style.opacity = '0.55';
-                btnStop.disabled = false;
-            }
+            text.textContent = 'CAMERA & COUNTING STOPPED';
+        }
+        if (btnStart) {
+            btnStart.style.opacity = '1.0';
+            btnStart.disabled = false;
+        }
+        if (btnStop) {
+            btnStop.style.opacity = '0.45';
+            btnStop.disabled = false;
         }
     }
 }
