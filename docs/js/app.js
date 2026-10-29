@@ -641,20 +641,7 @@ window.setGatePreset = async function(preset) {
     await sendLineToServer();
     showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
 };
-        lineOrientation = 'vertical';
-    } else if (preset === 'center_h') {
-        gateLine = { x1: 0.10, y1: 0.55, x2: 0.90, y2: 0.55 };
-        lineOrientation = 'horizontal';
-    } else if (preset === 'center_v') {
-        gateLine = { x1: 0.50, y1: 0.15, x2: 0.50, y2: 0.85 };
-        lineOrientation = 'vertical';
-    }
-    updateSlidersFromLine();
-    showLabelsUntil = Date.now() + 2000;
-    drawLineOnCanvas();
-    await sendLineToServer();
-    showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
-};
+
 
 window.flipGateLineDirection = async function() {
     const tmpX = gateLine.x1, tmpY = gateLine.y1;
