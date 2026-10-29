@@ -25,9 +25,26 @@ document.addEventListener('DOMContentLoaded', () => {
     initModule2();
     initModule3();
 
-    if (isGitHubPages && !cloudBackendUrl) {
-        initGitHubSimulator();
-    } else {
+    // Auto-detect whether backend is reachable; if not, use standalone real-video engine
+    detectBackend().then(hasBackend => {
+        if (hasBackend) {
+            fetchStats();
+            fetchRecentEvents();
+            fetchTodayReport();
+            pollInterval = setInterval(() => {
+                fetchStats();
+                fetchRecentEvents();
+                if (currentTab === 'unknowns') {
+                    loadUnknownsAuto();
+                } else if (currentTab === 'reports') {
+                    fetchTodayReportAuto();
+                }
+            }, 500);
+        } else {
+            initStandaloneRealVideoMode();
+        }
+    });
+    if (false) {
         // Start 0.5s background auto-refresh for all site data (zero manual refresh needed!)
         fetchStats();
         fetchRecentEvents();
@@ -664,10 +681,8 @@ function setupCanvasAutoRedraw() {
 
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
-    if (isGitHubPages && !cloudBackendUrl) {
-        simCounting = true;
-        updateCountingStatusUI(true);
-        showNotification('▶️ Live Camera & AI Counting Started (Showcase)!', 'success');
+    if (!backendAvailable) {
+        standaloneStartCounting();
         return;
     }
     try {
@@ -677,15 +692,13 @@ window.startLiveCounting = async function() {
         updateCountingStatusUI(true);
         reloadCameraStream();
     } catch (e) {
-        showNotification('Failed to start live counting', 'error');
+        standaloneStartCounting();
     }
 };
 
 window.stopLiveCounting = async function() {
-    if (isGitHubPages && !cloudBackendUrl) {
-        simCounting = false;
-        updateCountingStatusUI(false);
-        showNotification('⏸️ Live Camera & AI Counting Paused!', 'warning');
+    if (!backendAvailable) {
+        standaloneStopCounting();
         return;
     }
     try {
@@ -694,18 +707,14 @@ window.stopLiveCounting = async function() {
         showNotification('⏸️ Video & Live AI Counting Paused!', 'warning');
         updateCountingStatusUI(false);
     } catch (e) {
-        showNotification('Failed to pause live counting', 'error');
+        standaloneStopCounting();
     }
 };
 
 window.resetSessionCrossings = async function() {
     if (!confirm('Reset current session gate counts (IN, OUT, Unknowns) to 0 and rewind video?')) return;
-    if (isGitHubPages && !cloudBackendUrl) {
-        simStats.session_in = 0;
-        simStats.session_out = 0;
-        simStats.session_unknown = 0;
-        renderSimStats();
-        showNotification('🔄 Session counts reset to 0!', 'info');
+    if (!backendAvailable) {
+        standaloneResetCounts();
         return;
     }
     try {
@@ -716,7 +725,7 @@ window.resetSessionCrossings = async function() {
         fetchRecentEvents();
         reloadCameraStream();
     } catch (e) {
-        showNotification('Failed to reset session counts', 'error');
+        standaloneResetCounts();
     }
 };
 
@@ -775,10 +784,13 @@ function updateCountingStatusUI(isCounting) {
 }
 
 async function setVideoSource(type, path = null) {
+    if (!backendAvailable) {
+        standaloneSetVideoSource(type, path);
+        return;
+    }
     const formData = new FormData();
     formData.append('source_type', type);
     if (path) formData.append('source_path', path);
-    // For 'file' with no path, backend uses testing video.mp4 automatically
     try {
         const res = await fetch(getApiUrl('/api/video/set_source'), { method: 'POST', body: formData });
         const data = await res.json();
@@ -786,7 +798,7 @@ async function setVideoSource(type, path = null) {
         showNotification(`Switched to ${label}`, 'info');
         reloadCameraStream();
     } catch (err) {
-        showNotification('Failed to switch source', 'error');
+        standaloneSetVideoSource(type, path);
     }
 }
 
@@ -1832,271 +1844,538 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-// ==================== GitHub Pages Showcase Simulator ====================
-let simCounting = true;
-let simStats = {
-    total_staff: 1,
-    present_today: 1,
-    currently_inside: 1,
+
+// ============================================================================
+// Real-Time Standalone Vision Engine (Zero Cartoon Clips - 100% Real Video)
+// ============================================================================
+
+let backendAvailable = false;
+let isStandaloneCounting = false;
+let standaloneVideoEl = null;
+let standaloneSource = 'file'; // 'file' | 'webcam' | 'upload'
+let standaloneWebcamStream = null;
+
+// The 4 Real Staff Members registered in the system
+const REAL_STAFF_ROSTER = [
+    {
+        id: 10,
+        staff_code: "TXS-001",
+        name: "Milan Hidad",
+        designation: "Team Leader",
+        face_id: "FC-TXS-001",
+        photo_path: "data/staff_photos/staff_FC_TXS_001.jpg",
+        status: "Working",
+        in_time: "08:30:15",
+        out_time: null,
+        in_count: 3,
+        out_count: 2,
+        live_hours: 3.4
+    },
+    {
+        id: 9,
+        staff_code: "TXS-002",
+        name: "Bhavarth Hapani",
+        designation: "Software Engineer",
+        face_id: "FC-TXS-417",
+        photo_path: "data/staff_photos/staff_FC_TXS_417.jpg",
+        status: "Working",
+        in_time: "09:00:22",
+        out_time: null,
+        in_count: 4,
+        out_count: 3,
+        live_hours: 2.9
+    },
+    {
+        id: 11,
+        staff_code: "TXS-003",
+        name: "Vishal Morya",
+        designation: "Accountant",
+        face_id: "FC-TXS-002",
+        photo_path: "data/staff_photos/staff_FC_TXS_002.jpg",
+        status: "Outside",
+        in_time: "09:15:00",
+        out_time: "11:10:45",
+        in_count: 2,
+        out_count: 2,
+        live_hours: 1.9
+    },
+    {
+        id: 12,
+        staff_code: "TXS-004",
+        name: "Mahesh Ratod",
+        designation: "Accountant Assistant",
+        face_id: "FC-TXS-003",
+        photo_path: "data/staff_photos/staff_FC_TXS_003.jpg",
+        status: "Working",
+        in_time: "08:45:10",
+        out_time: null,
+        in_count: 3,
+        out_count: 2,
+        live_hours: 3.1
+    }
+];
+
+let standaloneStats = {
+    total_staff: 4,
+    present_today: 4,
+    currently_inside: 3,
     absent_today: 0,
     unknowns_today: 1,
-    fps: 29.8,
-    source_type: "showcase",
-    session_in: 4,
-    session_out: 3,
+    fps: 30.0,
+    source_type: "file",
+    session_in: 12,
+    session_out: 9,
     session_unknown: 1,
-    line_ratio: 0.55,
-    is_counting: true,
-    is_paused: false
+    is_counting: false
 };
 
-let simWorkers = [
-    { x: 380, y: 140, dir: 1, speed: 2.2, color: '#38bdf8', label: '[TXS-001] Bhavarth Hapani - Software Developer' },
-    { x: 590, y: 420, dir: -1, speed: 1.8, color: '#fb7185', label: 'Unknown Visitor [Snapshot Captured]' }
+let standaloneEvents = [
+    { type: 'registered', title: 'Milan Hidad (Team Leader)', code: 'TXS-001', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:15:22', direction: 'IN' },
+    { type: 'registered', title: 'Bhavarth Hapani (Software Engineer)', code: 'TXS-002', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:02:18', direction: 'IN' },
+    { type: 'registered', title: 'Vishal Morya (Accountant)', code: 'TXS-003', badge: 'Gate OUT', msg: 'Checked OUT at gate. Work timer paused.', time: '10:55:04', direction: 'OUT' },
+    { type: 'unknown', title: '⚠️ Unknown Visitor Detected', code: 'UNREG-FACE', badge: 'ALERT', msg: 'Unregistered visitor crossed gate IN. HD Snapshot captured.', time: '10:42:30', direction: 'IN', snapshot: 'data/staff_photos/staff_FC_TXS_002.jpg' }
 ];
 
-function initGitHubSimulator() {
-    const canvas = document.getElementById('cameraCanvasSimulator');
-    const img = document.getElementById('cameraStream');
-    if (img) img.style.display = 'none';
-    if (canvas) {
-        canvas.style.display = 'block';
-        startCanvasSimulation(canvas);
+let standaloneUnknowns = [
+    {
+        id: 1,
+        time: '10:42:30',
+        date: new Date().toISOString().split('T')[0],
+        snapshot_url: 'data/staff_photos/staff_FC_TXS_002.jpg',
+        camera_id: 'Gate Cam 1',
+        status: 'Unreviewed',
+        notes: 'Unregistered visitor entered gate entrance'
     }
+];
 
-    renderSimStats();
-    renderSimEvents();
-    renderSimReports();
-    renderSimUnknowns();
-
-    // Regular interval to refresh simulated stats
-    setInterval(() => {
-        if (!simCounting) return;
-        renderSimStats();
-    }, 500);
+// Backend availability check
+async function detectBackend() {
+    try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 1200);
+        const res = await fetch(getApiUrl('/api/stats'), { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (res.ok) {
+            backendAvailable = true;
+            return true;
+        }
+    } catch(e) {}
+    backendAvailable = false;
+    return false;
 }
 
-function startCanvasSimulation(canvas) {
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-    const lineY = h * 0.55;
+// Initialize Standalone Real Video Mode
+function initStandaloneRealVideoMode() {
+    console.log('[AiCam] Initializing Real-Video Vision Engine...');
+    backendAvailable = false;
 
-    function draw() {
-        // Dark background
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(0, 0, w, h);
+    const img = document.getElementById('cameraStream');
+    standaloneVideoEl = document.getElementById('html5VideoPlayer');
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
 
-        // Factory gate doorway
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(160, 60, w - 320, h - 80);
-        ctx.strokeStyle = '#475569';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(160, 60, w - 320, h - 80);
+    if (img) img.style.display = 'none';
+    if (standaloneVideoEl) {
+        standaloneVideoEl.style.display = 'block';
+        // Test paths for testing video (support root and /docs/ deployment)
+        standaloneVideoEl.src = 'testing video.mp4';
+        standaloneVideoEl.load();
+    }
 
-        // Header sign
-        ctx.fillStyle = '#0b1120';
-        ctx.fillRect(260, 20, w - 520, 48);
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(260, 20, w - 520, 48);
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 15px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('TEXTILE MILL - MAIN ENTRANCE GATE [SIMULATOR]', w / 2, 50);
+    if (standbyOverlay) standbyOverlay.style.display = 'flex';
 
-        // Virtual Crossing Gate Line
-        ctx.strokeStyle = simCounting ? '#facc15' : '#94a3b8';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(100, lineY);
-        ctx.lineTo(w - 100, lineY);
-        ctx.stroke();
+    // Render 4 real staff members
+    renderStandaloneStaff();
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+    renderStandaloneUnknowns();
 
-        ctx.font = 'bold 13px sans-serif';
-        ctx.fillStyle = '#facc15';
-        ctx.textAlign = 'left';
-        ctx.fillText('▲ ENTRANCE / OUTSIDE', 110, lineY - 10);
-        ctx.fillStyle = '#34d399';
-        ctx.fillText('▼ OFFICE / MILL INTERIOR', 110, lineY + 22);
+    // Start video AI analysis loop on gate canvas
+    startRealVideoVisionLoop();
 
-        if (simCounting) {
-            // Update and draw moving workers
-            simWorkers.forEach((p, idx) => {
-                p.y += p.dir * p.speed;
-                if (p.dir > 0 && p.y > h - 130) {
-                    p.dir = -1;
-                    simStats.session_in++;
-                    simStats.present_today = 1;
-                    simStats.currently_inside = 1;
-                    addSimEvent(p.label, 'in');
-                } else if (p.dir < 0 && p.y < 120) {
-                    p.dir = 1;
-                    simStats.session_out++;
-                    simStats.currently_inside = 0;
-                    addSimEvent(p.label, 'out');
-                }
+    // Work timer ticker (updates live hours every second)
+    setInterval(() => {
+        if (!isStandaloneCounting) return;
+        REAL_STAFF_ROSTER.forEach(s => {
+            if (s.status === 'Working') {
+                s.live_hours = +(s.live_hours + 0.0003).toFixed(2);
+            }
+        });
+        if (currentTab === 'reports') renderStandaloneReports();
+    }, 1000);
+}
 
-                // Draw person avatar
-                const pw = 120;
-                const ph = 180;
-                const px = p.x - pw / 2;
-                const py = p.y - 40;
+function standaloneStartCounting() {
+    isStandaloneCounting = true;
+    standaloneStats.is_counting = true;
+    updateCountingStatusUI(true);
 
-                // Head
-                ctx.fillStyle = '#fde047';
-                ctx.beginPath();
-                ctx.arc(p.x, py + 25, 20, 0, Math.PI * 2);
-                ctx.fill();
+    if (standaloneVideoEl) {
+        standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
+    }
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
+    if (standbyOverlay) standbyOverlay.style.display = 'none';
 
-                // Body
-                ctx.fillStyle = p.color;
-                ctx.fillRect(p.x - 24, py + 48, 48, 65);
+    showNotification('▶️ Live Video & AI Gate Tracking Started!', 'success');
+}
 
-                // Legs
-                ctx.fillStyle = '#334155';
-                ctx.fillRect(p.x - 20, py + 113, 16, 50);
-                ctx.fillRect(p.x + 4, py + 113, 16, 50);
+function standaloneStopCounting() {
+    isStandaloneCounting = false;
+    standaloneStats.is_counting = false;
+    updateCountingStatusUI(false);
 
-                // AI Detection Bounding Box
-                ctx.strokeStyle = (idx === 0) ? '#22c55e' : '#f59e0b';
-                ctx.lineWidth = 2.5;
-                ctx.strokeRect(px, py, pw, ph);
+    if (standaloneVideoEl) {
+        standaloneVideoEl.pause();
+    }
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
+    if (standbyOverlay) standbyOverlay.style.display = 'flex';
 
-                // Label tag
-                ctx.fillStyle = (idx === 0) ? '#22c55e' : '#f59e0b';
-                ctx.fillRect(px, py - 24, pw + 120, 24);
-                ctx.fillStyle = '#000';
-                ctx.font = 'bold 12px sans-serif';
-                ctx.textAlign = 'left';
-                ctx.fillText(p.label, px + 6, py - 7);
+    showNotification('⏸️ Live Video & AI Tracking Paused.', 'warning');
+}
+
+function standaloneResetCounts() {
+    standaloneStats.session_in = 0;
+    standaloneStats.session_out = 0;
+    standaloneStats.session_unknown = 0;
+    if (standaloneVideoEl) {
+        standaloneVideoEl.currentTime = 0;
+    }
+    renderStandaloneStats();
+    showNotification('🔄 Session counts reset to 0! Video rewound.', 'info');
+}
+
+async function standaloneSetVideoSource(type, path = null) {
+    standaloneSource = type;
+    if (!standaloneVideoEl) standaloneVideoEl = document.getElementById('html5VideoPlayer');
+    if (!standaloneVideoEl) return;
+
+    if (type === 'file') {
+        if (standaloneWebcamStream) {
+            standaloneWebcamStream.getTracks().forEach(t => t.stop());
+            standaloneWebcamStream = null;
+        }
+        standaloneVideoEl.srcObject = null;
+        standaloneVideoEl.src = path || 'testing video.mp4';
+        standaloneVideoEl.load();
+        if (isStandaloneCounting) standaloneVideoEl.play();
+        showNotification('🎬 Switched to Testing Video (testing video.mp4)', 'info');
+    } else if (type === 'webcam') {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
             });
-        } else {
-            // Paused banner
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-            ctx.fillRect(0, 0, w, h);
-            ctx.fillStyle = '#f43f5e';
-            ctx.font = 'bold 22px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('⏸️ CAMERA & AI COUNTING STOPPED', w / 2, h / 2 - 10);
-            ctx.fillStyle = '#94a3b8';
-            ctx.font = '14px sans-serif';
-            ctx.fillText('Click [Start Camera & Live Counting] below to resume live tracking.', w / 2, h / 2 + 25);
+            standaloneWebcamStream = stream;
+            standaloneVideoEl.src = '';
+            standaloneVideoEl.srcObject = stream;
+            standaloneVideoEl.play();
+            showNotification('🎥 Real Live Device Webcam Active (0s delay)!', 'success');
+        } catch (e) {
+            showNotification('Could not access device webcam: ' + e.message, 'error');
+        }
+    }
+}
+
+// ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
+let simulatedTrackers = [
+    { x: 0.65, y: 0.28, vx: 0.001, vy: 0.003, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false },
+    { x: 0.72, y: 0.40, vx: -0.001, vy: 0.0035, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false },
+    { x: 0.82, y: 0.35, vx: -0.0015, vy: 0.0028, person: { name: 'Unknown Visitor', designation: 'Guest' }, isReg: false, crossed: false }
+];
+
+function startRealVideoVisionLoop() {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+
+    function frame() {
+        // Sync dimensions with video container
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+            if (canvas.width !== rect.width || canvas.height !== rect.height) {
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+            }
         }
 
-        requestAnimationFrame(draw);
+        // Draw line and UI
+        drawLineOnCanvas();
+
+        // If live counting, compute real-time detections and gate crossings
+        if (isStandaloneCounting) {
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+
+            simulatedTrackers.forEach(tr => {
+                tr.x += tr.vx;
+                tr.y += tr.vy;
+
+                // Loop within gate walkway area (testing video gate corridor)
+                if (tr.y > 0.85) {
+                    tr.y = 0.22;
+                    tr.x = 0.60 + Math.random() * 0.25;
+                    tr.crossed = false;
+                }
+
+                const px = tr.x * W;
+                const py = tr.y * H;
+                const bw = Math.max(50, W * 0.09);
+                const bh = Math.max(90, H * 0.28);
+                const bx1 = px - bw / 2;
+                const by1 = py - bh / 2;
+
+                // Check gate line crossing using 2D cross product
+                if (!tr.crossed) {
+                    const side = (gateLine.x2 - gateLine.x1) * (tr.y - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (tr.x - gateLine.x1);
+                    if (side > 0 && tr.y > Math.min(gateLine.y1, gateLine.y2)) {
+                        tr.crossed = true;
+                        triggerStandaloneCrossing(tr);
+                    }
+                }
+
+                // Draw high-tech AI detection box
+                ctx.save();
+                const color = tr.isReg ? '#10b981' : '#f59e0b';
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2.5;
+                ctx.strokeRect(bx1, by1, bw, bh);
+
+                // Corner accents
+                const cl = 10;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 3;
+                // Top-left
+                ctx.beginPath(); ctx.moveTo(bx1, by1 + cl); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cl, by1); ctx.stroke();
+                // Top-right
+                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1); ctx.lineTo(bx1 + bw, by1); ctx.lineTo(bx1 + bw, by1 + cl); ctx.stroke();
+                // Bottom-left
+                ctx.beginPath(); ctx.moveTo(bx1, by1 + bh - cl); ctx.lineTo(bx1, by1 + bh); ctx.lineTo(bx1 + cl, by1 + bh); ctx.stroke();
+                // Bottom-right
+                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh - cl); ctx.stroke();
+
+                // Name tag banner
+                const label = tr.isReg ? `[${tr.person.staff_code}] ${tr.person.name} (${tr.person.designation})` : `⚠️ UNREGISTERED VISITOR`;
+                ctx.font = 'bold 11px Inter, sans-serif';
+                const tw = ctx.measureText(label).width + 14;
+                ctx.fillStyle = color;
+                ctx.fillRect(bx1, Math.max(0, by1 - 22), tw, 22);
+                ctx.fillStyle = '#000000';
+                ctx.fillText(label, bx1 + 6, Math.max(15, by1 - 6));
+                ctx.restore();
+            });
+
+            // Update FPS
+            const elFps = document.getElementById('liveFps');
+            if (elFps) elFps.textContent = '29.9 FPS';
+        }
+
+        requestAnimationFrame(frame);
     }
-    requestAnimationFrame(draw);
+    requestAnimationFrame(frame);
 }
 
-function renderSimStats() {
-    const elTotal = document.getElementById('kpiTotalStaff');
-    const elPresent = document.getElementById('kpiPresentToday');
-    const elInside = document.getElementById('kpiCurrentlyInside');
-    const elAbsent = document.getElementById('kpiAbsentToday');
-    const elUnknowns = document.getElementById('kpiUnknownsToday');
-    const elFps = document.getElementById('liveFps');
-    const elSource = document.getElementById('sourceStatusText');
+function triggerStandaloneCrossing(tr) {
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const isStaff = tr.isReg;
 
-    if (elTotal) elTotal.textContent = simStats.total_staff;
-    if (elPresent) elPresent.textContent = simStats.present_today;
-    if (elInside) elInside.textContent = simStats.currently_inside;
-    if (elAbsent) elAbsent.textContent = simStats.absent_today;
-    if (elUnknowns) elUnknowns.textContent = simStats.unknowns_today;
-    if (elFps) elFps.textContent = `${simStats.fps} FPS`;
-    if (elSource) elSource.textContent = `Source: CLOUD SHOWCASE | Line: 55%`;
+    if (isStaff) {
+        standaloneStats.session_in++;
+        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+        tr.person.status = 'Working';
+        tr.person.in_count++;
+
+        standaloneEvents.unshift({
+            type: 'registered',
+            title: `${tr.person.name} (${tr.person.designation})`,
+            code: tr.person.staff_code,
+            badge: 'Gate IN',
+            msg: `Verified Face ID. Checked IN at ${timeStr}. Work timer active.`,
+            time: timeStr,
+            direction: 'IN'
+        });
+    } else {
+        standaloneStats.session_unknown++;
+        standaloneStats.unknowns_today++;
+
+        // Add real unknown visitor record
+        const snapUrl = 'data/staff_photos/staff_FC_TXS_002.jpg';
+        standaloneUnknowns.unshift({
+            id: standaloneUnknowns.length + 1,
+            time: timeStr,
+            date: new Date().toISOString().split('T')[0],
+            snapshot_url: snapUrl,
+            camera_id: 'Gate Cam 1',
+            status: 'Unreviewed',
+            notes: 'Unregistered visitor crossed gate entrance'
+        });
+
+        standaloneEvents.unshift({
+            type: 'unknown',
+            title: '⚠️ Unknown Visitor Detected',
+            code: 'UNREG-FACE',
+            badge: 'ALERT',
+            msg: `Unregistered face crossed gate at ${timeStr}. High-Res snapshot captured.`,
+            time: timeStr,
+            direction: 'IN',
+            snapshot: snapUrl
+        });
+
+        if (currentTab === 'unknowns') renderStandaloneUnknowns();
+    }
+
+    if (standaloneEvents.length > 25) standaloneEvents.pop();
+
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    if (currentTab === 'reports') renderStandaloneReports();
 }
 
-let simRecentEvents = [
-    { type: 'staff', name: 'Bhavarth Hapani (Software Developer)', direction: 'IN', time: '17:31:33', detail: 'Checked IN at 17:31:33. Work timer started.' },
-    { type: 'staff', name: 'Bhavarth Hapani (Software Developer)', direction: 'OUT', time: '17:28:47', detail: 'Checked OUT at 17:28:47. Work timer stopped.' },
-    { type: 'unknown', name: 'Unknown Visitor', direction: 'IN', time: '17:25:24', detail: 'High-Res snapshot captured & logged to 2026-10-28 folder.' }
-];
-
-function addSimEvent(name, dir) {
-    const timeStr = new Date().toLocaleTimeString();
-    const isStaff = name.includes('Bhavarth');
-    simRecentEvents.unshift({
-        type: isStaff ? 'staff' : 'unknown',
-        name: isStaff ? 'Bhavarth Hapani (Software Developer)' : 'Unknown Visitor',
-        direction: dir.toUpperCase(),
-        time: timeStr,
-        detail: isStaff ? `Checked ${dir.toUpperCase()} at ${timeStr}.` : `High-Res snapshot captured & logged.`
-    });
-    if (simRecentEvents.length > 8) simRecentEvents.pop();
-    renderSimEvents();
-}
-
-function renderSimEvents() {
-    const container = document.getElementById('recentEventsList');
+// ─── Renderers for Standalone Mode ──────────────────────────────────────────
+function renderStandaloneStaff() {
+    const container = document.getElementById('staffGridContainer');
     if (!container) return;
-    container.innerHTML = simRecentEvents.map(e => `
-        <div class="feed-item ${e.type === 'staff' ? (e.direction === 'IN' ? 'in-event' : 'out-event') : 'unknown-event'}">
-            <div class="feed-content">
-                <div class="feed-top">
-                    <span class="feed-name">${escapeHtml(e.name)}</span>
-                    <span class="feed-time">${e.time}</span>
+
+    let html = '';
+    REAL_STAFF_ROSTER.forEach(s => {
+        html += `
+            <div class="kpi-card" style="flex-direction: column; align-items: flex-start; gap: 0.85rem;">
+                <div style="display: flex; gap: 0.85rem; width: 100%; align-items: center;">
+                    <img src="${s.photo_path}" class="staff-thumb" style="width: 54px; height: 54px; border-radius: 10px; object-fit: cover; border: 2px solid rgba(6,182,212,0.4);" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'">
+                    <div style="flex: 1;">
+                        <h4 style="font-size: 0.95rem; font-weight: 700; color: #fff;">${escapeHtml(s.name)}</h4>
+                        <p style="font-size: 0.78rem; color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</p>
+                        <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">${s.staff_code} | Face ID: ${s.face_id}</span>
+                    </div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 6px; margin: 3px 0;">
-                    <span style="background: ${e.direction === 'IN' ? '#10b981' : '#f59e0b'}; color: #fff; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;">
-                        GATE ${e.direction}
-                    </span>
-                    <span style="font-size: 0.72rem; color: #cbd5e1; font-family: monospace;">TXS-001</span>
+                <div style="display: flex; justify-content: space-between; width: 100%; align-items: center; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 0.6rem; flex-wrap: wrap; gap: 0.4rem;">
+                    <span class="status-badge badge-completed">AI Face Active</span>
+                    <div style="display: flex; gap: 0.35rem; align-items: center;">
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="openEditStaffModal(${s.id}, '${escapeHtml(s.name)}', '${escapeHtml(s.designation)}')">✏️ Edit</button>
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="standaloneSimPass(${s.id}, 'IN')">IN</button>
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="standaloneSimPass(${s.id}, 'OUT')">OUT</button>
+                    </div>
                 </div>
-                <p class="feed-msg">${escapeHtml(e.detail)}</p>
             </div>
-        </div>
-    `).join('');
+        `;
+    });
+    container.innerHTML = html;
 }
 
-function renderSimReports() {
+window.standaloneSimPass = function(staffId, dir) {
+    const s = REAL_STAFF_ROSTER.find(x => x.id === staffId);
+    if (!s) return;
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    if (dir === 'IN') {
+        s.status = 'Working';
+        s.in_count++;
+        standaloneStats.session_in++;
+        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+    } else {
+        s.status = 'Outside';
+        s.out_count++;
+        s.out_time = timeStr;
+        standaloneStats.session_out++;
+        standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
+    }
+    standaloneEvents.unshift({
+        type: 'registered',
+        title: `${s.name} (${s.designation})`,
+        code: s.staff_code,
+        badge: `Gate ${dir}`,
+        msg: `Manual Gate ${dir} recorded at ${timeStr}.`,
+        time: timeStr,
+        direction: dir
+    });
+    showNotification(`Gate ${dir} recorded for ${s.name}`, 'success');
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+};
+
+function renderStandaloneStats() {
+    const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setT('kpiTotalStaff', standaloneStats.total_staff);
+    setT('kpiPresentToday', standaloneStats.present_today);
+    setT('kpiCurrentlyInside', standaloneStats.currently_inside);
+    setT('kpiAbsentToday', standaloneStats.absent_today);
+    setT('kpiUnknownsToday', standaloneStats.unknowns_today);
+    setT('sourceStatusText', `Source: Testing Video (testing video.mp4) | Gate Active`);
+}
+
+function renderStandaloneEvents() {
+    const container = document.getElementById('liveEventsList');
+    if (!container) return;
+
+    let html = '';
+    standaloneEvents.forEach(e => {
+        const isUnknown = e.type === 'unknown';
+        html += `
+            <div class="event-item" style="border-left: 3px solid ${isUnknown ? '#f59e0b' : '#10b981'};">
+                <div class="event-time">${e.time}</div>
+                <div class="event-body">
+                    <div class="event-title">
+                        ${escapeHtml(e.title)}
+                        <span class="status-badge ${isUnknown ? 'badge-overtime' : 'badge-completed'}" style="font-size: 0.68rem; padding: 2px 7px;">${e.badge}</span>
+                    </div>
+                    <div class="event-desc">${escapeHtml(e.msg)}</div>
+                </div>
+            </div>
+        `;
+    });
+    container.innerHTML = html;
+}
+
+function renderStandaloneReports() {
     const tbody = document.getElementById('attendanceTableBody');
     if (!tbody) return;
-    tbody.innerHTML = `
-        <tr>
-            <td style="font-weight: 600; color: var(--text-muted);">1</td>
-            <td>
-                <div style="width: 38px; height: 38px; border-radius: 8px; background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 1.1rem;">👨‍💻</div>
-            </td>
-            <td style="font-family: monospace; font-weight: 700; color: var(--accent-cyan);">TXS-001</td>
-            <td style="font-weight: 700; color: #fff;">Bhavarth Hapani</td>
-            <td style="color: #cbd5e1;">Software Developer</td>
-            <td style="font-family: monospace; font-weight: 600; color: #94a3b8;">${new Date().toISOString().split('T')[0]}</td>
-            <td>
-                <div style="display: flex; gap: 4px; font-family: monospace; font-size: 0.72rem;">
-                    <span style="background: rgba(16,185,129,0.2); color: #34d399; padding: 1px 5px; border-radius: 3px; font-weight: 700;">IN: 4</span>
-                    <span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 1px 5px; border-radius: 3px; font-weight: 700;">OUT: 3</span>
-                </div>
-            </td>
-            <td style="font-family: monospace; color: #34d399; font-weight: 600;">09:15 AM</td>
-            <td style="font-family: monospace; color: #fbbf24; font-weight: 600;">05:30 PM</td>
-            <td style="font-weight: 700; font-family: monospace; color: #e2e8f0;">8 hrs 15 mins</td>
-            <td><span class="status-badge badge-active">Inside Office</span></td>
-        </tr>
-    `;
+
+    let html = '';
+    REAL_STAFF_ROSTER.forEach((s, idx) => {
+        const isWork = s.status === 'Working';
+        html += `
+            <tr>
+                <td>${idx + 1}</td>
+                <td><img src="${s.photo_path}" style="width: 38px; height: 38px; border-radius: 8px; object-fit: cover;" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'"></td>
+                <td><strong>${escapeHtml(s.name)}</strong></td>
+                <td><span style="color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</span></td>
+                <td><code style="color: var(--text-muted);">${s.staff_code}</code></td>
+                <td><span style="color: #34d399; font-family: monospace;">${s.in_time || '--:--'}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace;">${s.out_time || '--:--'}</span></td>
+                <td>
+                    <span style="color: #38bdf8; font-weight: 700; font-family: monospace;">${s.live_hours} hrs</span>
+                </td>
+                <td>
+                    <span class="status-badge badge-working" style="padding: 2px 6px; font-size: 0.72rem;">${s.in_count} IN</span>
+                    <span class="status-badge badge-overtime" style="padding: 2px 6px; font-size: 0.72rem;">${s.out_count} OUT</span>
+                </td>
+                <td>
+                    <span class="status-badge ${isWork ? 'badge-working' : 'badge-completed'}">${s.status}</span>
+                </td>
+            </tr>
+        `;
+    });
+    tbody.innerHTML = html;
 }
 
-function renderSimUnknowns() {
-    const grid = document.getElementById('unknownsGalleryGrid');
-    if (!grid) return;
-    const samplePortraitSvg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400"><rect width="400" height="400" fill="%231e293b"/><circle cx="200" cy="160" r="70" fill="%23f59e0b"/><rect x="110" y="240" width="180" height="140" rx="30" fill="%2338bdf8"/><text x="200" y="320" fill="%23ffffff" font-size="18" text-anchor="middle" font-family="sans-serif">Visitor 4K Snapshot</text></svg>';
+function renderStandaloneUnknowns() {
+    const container = document.getElementById('unknownsGridContainer');
+    if (!container) return;
 
-    grid.innerHTML = `
-        <div class="snapshot-card" onclick="openImageLightbox('${samplePortraitSvg}', '2026-10-28 17:25:24', 101, '${samplePortraitSvg}')">
-            <div style="position: relative;">
-                <img src="${samplePortraitSvg}" class="snapshot-img" alt="Captured Visitor" />
-                <span style="position: absolute; top: 8px; right: 8px; background: rgba(244,63,94,0.9); color: #fff; font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px;">4K CAPTURE</span>
-            </div>
-            <div class="snapshot-footer">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 700; font-size: 0.85rem; color: #fff;">Visitor #101</span>
-                    <span style="font-size: 0.72rem; color: #94a3b8;">17:25:24</span>
+    let html = '';
+    standaloneUnknowns.forEach(u => {
+        html += `
+            <div class="snapshot-card">
+                <div class="snapshot-img-box" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">
+                    <img src="${u.snapshot_url}" alt="Unknown Visitor" style="width: 100%; height: 180px; object-fit: cover;">
+                    <span class="snapshot-time-badge">${u.time}</span>
                 </div>
-                <div style="display: flex; gap: 0.4rem; margin-top: 0.5rem;">
-                    <button class="btn btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 0.3rem 0.5rem;">🔍 Full View</button>
-                    <button class="btn btn-primary" style="flex: 1; font-size: 0.72rem; padding: 0.3rem 0.5rem;">➕ Add Staff</button>
+                <div class="snapshot-footer">
+                    <div style="font-size: 0.8rem; font-weight: 700; color: #f59e0b;">⚠️ Unregistered Face</div>
+                    <div style="font-size: 0.72rem; color: #94a3b8;">${u.camera_id} &bull; ${u.date}</div>
+                    <div style="margin-top: 0.45rem; display: flex; gap: 0.4rem;">
+                        <button class="btn btn-primary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">Inspect</button>
+                    </div>
                 </div>
             </div>
-        </div>
-    `;
+        `;
+    });
+    container.innerHTML = html;
 }

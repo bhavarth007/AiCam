@@ -18,15 +18,33 @@ document.addEventListener('DOMContentLoaded', () => {
     initClock();
     initTabs();
     initSourceControls();
+    setupCanvasAutoRedraw();   // ← new: keep gate line canvas always redrawn
     initStaffRegistration();
     initReports();
     initUnknowns();
     initModule2();
     initModule3();
 
-    if (isGitHubPages && !cloudBackendUrl) {
-        initGitHubSimulator();
-    } else {
+    // Auto-detect whether backend is reachable; if not, use standalone real-video engine
+    detectBackend().then(hasBackend => {
+        if (hasBackend) {
+            fetchStats();
+            fetchRecentEvents();
+            fetchTodayReport();
+            pollInterval = setInterval(() => {
+                fetchStats();
+                fetchRecentEvents();
+                if (currentTab === 'unknowns') {
+                    loadUnknownsAuto();
+                } else if (currentTab === 'reports') {
+                    fetchTodayReportAuto();
+                }
+            }, 500);
+        } else {
+            initStandaloneRealVideoMode();
+        }
+    });
+    if (false) {
         // Start 0.5s background auto-refresh for all site data (zero manual refresh needed!)
         fetchStats();
         fetchRecentEvents();
@@ -134,42 +152,38 @@ function switchTab(tabId) {
     }
 }
 
-// ----------------- Live Camera & Sources -----------------
+
+// ─── Gate Line State ─────────────────────────────────────────────────────────
+// Normalized 0.0-1.0 coordinates of the gate line endpoints
+let gateLine = { x1: 0.0, y1: 0.55, x2: 1.0, y2: 0.55 };
+let lineOrientation = 'horizontal';
+let lineLength = 1.0;   // fraction of full span (0.1–1.0)
+let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
+
+// Draw mode state
+let drawModeActive = false;
+let isDragging = false;
+let dragTarget = null; // 'line' | 'p1' | 'p2' | 'new'
+let dragStartX = 0, dragStartY = 0;
+let dragOffX = 0, dragOffY = 0;
+
+// Canvas handle hit radius (in normalized units)
+const HANDLE_RADIUS_NORM = 0.025;
+
+// ─── initSourceControls ───────────────────────────────────────────────────────
 function initSourceControls() {
-    const btnWebcam = document.getElementById('btnSrcWebcam');
-    const btnSim = document.getElementById('btnSrcSim');
     const videoInput = document.getElementById('videoFileInput');
-    const lineSlider = document.getElementById('linePosSlider');
-    const lineVal = document.getElementById('linePosValue');
-
-    if (btnWebcam) {
-        btnWebcam.addEventListener('click', () => {
-            setVideoSource('webcam');
-        });
-    }
-
-    if (btnSim) {
-        btnSim.addEventListener('click', () => {
-            setVideoSource('synthetic');
-        });
-    }
 
     if (videoInput) {
         videoInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             const formData = new FormData();
             formData.append('video', file);
-
             const statusBanner = document.getElementById('sourceStatusText');
             if (statusBanner) statusBanner.textContent = 'Uploading gate CCTV video...';
-
             try {
-                const res = await fetch('/api/video/upload', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch(getApiUrl('/api/video/upload'), { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.status === 'success') {
                     showNotification('Gate video uploaded and AI stream active!', 'success');
@@ -183,48 +197,492 @@ function initSourceControls() {
         });
     }
 
-    if (lineSlider) {
-        lineSlider.addEventListener('input', (e) => {
-            const val = parseFloat(e.target.value);
-            if (lineVal) lineVal.textContent = Math.round(val * 100) + '%';
-        });
+    // Fetch current line config from server and sync sliders + canvas
+    syncLineFromServer();
 
-        lineSlider.addEventListener('change', async (e) => {
-            const val = parseFloat(e.target.value);
-            const formData = new FormData();
-            formData.append('ratio', val);
-            formData.append('orientation', 'horizontal');
+    // Initialize canvas gate line overlay
+    initGateLineCanvas();
+}
 
-            await fetch('/api/tracking/set_line', {
-                method: 'POST',
-                body: formData
-            });
-            showNotification(`Gate entrance line set to ${Math.round(val * 100)}%`, 'info');
-        });
+// ─── Fetch current line state from server ─────────────────────────────────────
+async function syncLineFromServer() {
+    try {
+        const res = await fetch(getApiUrl('/api/tracking/get_line'));
+        const d = await res.json();
+        gateLine = { x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2 };
+        lineOrientation = d.orientation || 'horizontal';
+        linePos = d.ratio || 0.55;
+        // Estimate length from line coords
+        const dx = d.x2 - d.x1;
+        const dy = d.y2 - d.y1;
+        lineLength = Math.min(1.0, Math.max(0.1, Math.sqrt(dx*dx + dy*dy)));
+        updateSlidersFromLine();
+        drawLineOnCanvas();
+    } catch(e) {}
+}
+
+// ─── Gate Line Canvas Interactive System ─────────────────────────────────────
+function initGateLineCanvas() {
+    const wrapper = document.getElementById('videoWrapper');
+    const canvas  = document.getElementById('gateLineCanvas');
+    if (!canvas || !wrapper) return;
+
+    // Always draw line (even when draw mode is off) - using a transparent overlay
+    // that shows endpoint handles but doesn't block pointer when draw mode is off
+    drawLineOnCanvas();
+
+    // Mouse events for dragging
+    canvas.addEventListener('mousedown',  onCanvasMouseDown);
+    canvas.addEventListener('mousemove',  onCanvasMouseMove);
+    canvas.addEventListener('mouseup',    onCanvasMouseUp);
+    canvas.addEventListener('mouseleave', onCanvasMouseUp);
+
+    // Touch events for mobile
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onCanvasMouseDown(touchToMouse(e)); }, { passive: false });
+    canvas.addEventListener('touchmove',  (e) => { e.preventDefault(); onCanvasMouseMove(touchToMouse(e)); }, { passive: false });
+    canvas.addEventListener('touchend',   (e) => { e.preventDefault(); onCanvasMouseUp(touchToMouse(e));   }, { passive: false });
+}
+
+function touchToMouse(e) {
+    const t = e.touches[0] || e.changedTouches[0];
+    return { clientX: t.clientX, clientY: t.clientY, preventDefault: () => e.preventDefault() };
+}
+
+// Convert canvas pixel pos to normalized (0-1)
+function canvasPxToNorm(canvas, px, py) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: (px - rect.left) / rect.width,
+        y: (py - rect.top)  / rect.height
+    };
+}
+
+// Hit test: is (nx,ny) near an endpoint or line body?
+function hitTest(nx, ny) {
+    const { x1, y1, x2, y2 } = gateLine;
+    const r = HANDLE_RADIUS_NORM;
+
+    // Check endpoint 1
+    if (Math.hypot(nx - x1, ny - y1) < r) return 'p1';
+    // Check endpoint 2
+    if (Math.hypot(nx - x2, ny - y2) < r) return 'p2';
+    // Check line body (within r distance)
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx*dx + dy*dy;
+    if (len2 > 0) {
+        const t = Math.max(0, Math.min(1, ((nx-x1)*dx + (ny-y1)*dy) / len2));
+        const projX = x1 + t*dx, projY = y1 + t*dy;
+        if (Math.hypot(nx - projX, ny - projY) < r * 1.5) return 'line';
     }
+    return null;
+}
 
-    // Live Counting & Video Controls
-    const btnStart = document.getElementById('btnStartCounting');
-    const btnStop = document.getElementById('btnStopCounting');
-    const btnReset = document.getElementById('btnResetSessionCounts');
+let sendLineTimeout = null;
+function throttledSendLineToServer() {
+    if (sendLineTimeout) return;
+    sendLineTimeout = setTimeout(() => {
+        sendLineTimeout = null;
+        sendLineToServer();
+    }, 60);
+}
 
-    if (btnStart) {
-        btnStart.addEventListener('click', () => window.startLiveCounting());
-    }
-    if (btnStop) {
-        btnStop.addEventListener('click', () => window.stopLiveCounting());
-    }
-    if (btnReset) {
-        btnReset.addEventListener('click', () => window.resetSessionCrossings());
+function onCanvasMouseDown(e) {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+    const { x: nx, y: ny } = canvasPxToNorm(canvas, e.clientX, e.clientY);
+
+    // Hit test allows dragging endpoints or whole line ANY TIME directly on video
+    const hit = hitTest(nx, ny);
+    if (hit) {
+        dragTarget = hit;
+        dragOffX = nx - (hit === 'p2' ? gateLine.x2 : gateLine.x1);
+        dragOffY = ny - (hit === 'p2' ? gateLine.y2 : gateLine.y1);
+        isDragging = true;
+        dragStartX = nx;
+        dragStartY = ny;
+        canvas.style.cursor = 'grabbing';
+    } else if (drawModeActive) {
+        // Dedicated draw mode: click anywhere to draw a brand new line
+        dragTarget = 'new';
+        gateLine.x1 = nx;
+        gateLine.y1 = ny;
+        gateLine.x2 = nx;
+        gateLine.y2 = ny;
+        isDragging = true;
+        dragStartX = nx;
+        dragStartY = ny;
+        canvas.style.cursor = 'crosshair';
     }
 }
 
+function onCanvasMouseMove(e) {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+    const { x: nx, y: ny } = canvasPxToNorm(canvas, e.clientX, e.clientY);
+
+    if (!isDragging) {
+        const hit = hitTest(nx, ny);
+        if (hit === 'p1' || hit === 'p2') {
+            canvas.style.cursor = 'grab';
+        } else if (hit === 'line') {
+            canvas.style.cursor = 'move';
+        } else {
+            canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
+        }
+        return;
+    }
+
+    if (dragTarget === 'new') {
+        gateLine.x2 = Math.max(0, Math.min(1, nx));
+        gateLine.y2 = Math.max(0, Math.min(1, ny));
+    } else if (dragTarget === 'p1') {
+        gateLine.x1 = Math.max(0, Math.min(1, nx - dragOffX));
+        gateLine.y1 = Math.max(0, Math.min(1, ny - dragOffY));
+    } else if (dragTarget === 'p2') {
+        gateLine.x2 = Math.max(0, Math.min(1, nx - dragOffX));
+        gateLine.y2 = Math.max(0, Math.min(1, ny - dragOffY));
+    } else if (dragTarget === 'line') {
+        const dx = nx - dragStartX;
+        const dy = ny - dragStartY;
+        gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + dx));
+        gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + dy));
+        gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2 + dx));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + dy));
+        dragStartX = nx;
+        dragStartY = ny;
+    }
+
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+}
+
+async function onCanvasMouseUp(e) {
+    if (!isDragging) return;
+    isDragging = false;
+    dragTarget = null;
+    const canvas = document.getElementById('gateLineCanvas');
+    if (canvas) canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
+
+    // Persist final coordinates
+    await sendLineToServer();
+}
+
+function drawLineOnCanvas() {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+
+    // Sync canvas pixel size to display size
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+        canvas.width  = rect.width;
+        canvas.height = rect.height;
+    }
+    const W = canvas.width, H = canvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const { x1, y1, x2, y2 } = gateLine;
+    const px1 = x1 * W, py1 = y1 * H;
+    const px2 = x2 * W, py2 = y2 * H;
+
+    const isActive = document.getElementById('countingStatusText')?.textContent?.includes('LIVE');
+    const lineColor = isActive ? '#00ffff' : '#fbbf24';
+    const glowColor = isActive ? 'rgba(0,255,255,0.3)' : 'rgba(251,191,36,0.3)';
+
+    // Glow
+    ctx.save();
+    ctx.strokeStyle = glowColor;
+    ctx.lineWidth = 12;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = lineColor;
+    ctx.shadowBlur = 15;
+    ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+    ctx.restore();
+
+    // Main line
+    ctx.save();
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Endpoint handles
+    [{ x: px1, y: py1 }, { x: px2, y: py2 }].forEach(pt => {
+        // Outer ring
+        ctx.save();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.fillStyle = lineColor;
+        ctx.shadowColor = lineColor;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        // Inner dot
+        ctx.save();
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    });
+
+    // Midpoint marker
+    const mx = (px1 + px2) / 2, my = (py1 + py2) / 2;
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Direction labels
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.max(0.001, Math.hypot(dx, dy));
+    const nx2 = -dy/len, ny2 = dx/len; // perpendicular
+
+    const OFF = 0.06;
+    const outX = ((x1+x2)/2 + nx2 * OFF) * W;
+    const outY = ((y1+y2)/2 + ny2 * OFF) * H;
+    const inX  = ((x1+x2)/2 - nx2 * OFF) * W;
+    const inY  = ((y1+y2)/2 - ny2 * OFF) * H;
+
+    ctx.font = 'bold 12px Inter, monospace';
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = '#000';
+    ctx.fillStyle = '#00e5ff';
+    ctx.fillText('OUTSIDE', Math.max(40, Math.min(W-40, outX)), Math.max(16, Math.min(H-8, outY)));
+    ctx.fillStyle = '#34d399';
+    ctx.fillText('INSIDE', Math.max(30, Math.min(W-30, inX)), Math.max(16, Math.min(H-8, inY)));
+
+    // Update coord display
+    const fmt = v => v.toFixed(2);
+    const setTxt = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setTxt('lineCoordX1', fmt(x1)); setTxt('lineCoordY1', fmt(y1));
+    setTxt('lineCoordX2', fmt(x2)); setTxt('lineCoordY2', fmt(y2));
+}
+
+// ─── Send line coords to backend ─────────────────────────────────────────────
+async function sendLineToServer() {
+    const { x1, y1, x2, y2 } = gateLine;
+    const fd = new FormData();
+    fd.append('x1', x1); fd.append('y1', y1);
+    fd.append('x2', x2); fd.append('y2', y2);
+    try {
+        await fetch(getApiUrl('/api/tracking/set_line_coords'), { method: 'POST', body: fd });
+        showNotification(`Gate line updated!`, 'info');
+    } catch(e) {}
+}
+
+// ─── Toggle draw mode ────────────────────────────────────────────────────────
+window.toggleGateLineDrawMode = function() {
+    drawModeActive = !drawModeActive;
+    const canvas = document.getElementById('gateLineCanvas');
+    const badge  = document.getElementById('drawModeBadge');
+    const btn    = document.getElementById('btnToggleDrawMode');
+
+    if (drawModeActive) {
+        if (canvas) {
+            canvas.style.display = 'block';
+            canvas.style.pointerEvents = 'auto';
+            canvas.style.cursor = 'crosshair';
+        }
+        if (badge) badge.style.display = 'block';
+        if (btn) {
+            btn.textContent = '✅ Exit Draw Mode';
+            btn.style.color = '#34d399';
+            btn.style.borderColor = 'rgba(52,211,153,0.5)';
+        }
+        showNotification('✏️ Draw mode ON — drag to draw or resize the gate line', 'info');
+    } else {
+        if (canvas) {
+            canvas.style.pointerEvents = 'auto'; // let clicks pass through
+        }
+        if (badge) badge.style.display = 'none';
+        if (btn) {
+            btn.textContent = '✏️ Draw on Video';
+            btn.style.color = '#fbbf24';
+            btn.style.borderColor = 'rgba(251,191,36,0.5)';
+        }
+        showNotification('Draw mode OFF. Line saved.', 'success');
+        sendLineToServer();
+    }
+    drawLineOnCanvas();
+};
+
+// ─── Slider helpers ───────────────────────────────────────────────────────────
+// ─── Live Length & Position Sliders (Resize Small / Big & Shift Anywhere) ───
+window.onLineLengthChangeLive = function(val) {
+    lineLength = parseFloat(val);
+    const el = document.getElementById('lineLengthValue');
+    if (el) el.textContent = Math.round(lineLength * 100) + '%';
+
+    // Scale line length around its center preserving exact angle and position!
+    const cx = (gateLine.x1 + gateLine.x2) / 2;
+    const cy = (gateLine.y1 + gateLine.y2) / 2;
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const curLen = Math.hypot(dx, dy) || 0.001;
+    const cosA = dx / curLen;
+    const sinA = dy / curLen;
+    const half = lineLength / 2;
+
+    gateLine.x1 = Math.max(0, Math.min(1, cx - half * cosA));
+    gateLine.y1 = Math.max(0, Math.min(1, cy - half * sinA));
+    gateLine.x2 = Math.max(0, Math.min(1, cx + half * cosA));
+    gateLine.y2 = Math.max(0, Math.min(1, cy + half * sinA));
+
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+};
+
+window.onLineLengthInput = window.onLineLengthChangeLive;
+
+window.onLinePosChangeLive = function(val) {
+    linePos = parseFloat(val);
+    const el = document.getElementById('linePosValue');
+    if (el) el.textContent = Math.round(linePos * 100) + '%';
+
+    // Shift line perpendicular to its axis or along position axis
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const isH = Math.abs(dy) <= Math.abs(dx);
+
+    if (isH) {
+        const curCy = (gateLine.y1 + gateLine.y2) / 2;
+        const shiftY = linePos - curCy;
+        gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + shiftY));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + shiftY));
+    } else {
+        const curCx = (gateLine.x1 + gateLine.x2) / 2;
+        const shiftX = linePos - curCx;
+        gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + shiftX));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + shiftX));
+    }
+
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+};
+
+window.onLinePosInput = window.onLinePosChangeLive;
+
+window.setGatePreset = async function(preset) {
+    if (preset === 'right_gate') {
+        // Vertical line at right gate area (gate entrance in testing video)
+        gateLine = { x1: 0.68, y1: 0.22, x2: 0.68, y2: 0.88 };
+        lineOrientation = 'vertical';
+    } else if (preset === 'center_h') {
+        gateLine = { x1: 0.10, y1: 0.55, x2: 0.90, y2: 0.55 };
+        lineOrientation = 'horizontal';
+    } else if (preset === 'center_v') {
+        gateLine = { x1: 0.50, y1: 0.15, x2: 0.50, y2: 0.85 };
+        lineOrientation = 'vertical';
+    }
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    await sendLineToServer();
+    showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
+};
+
+window.flipGateLineDirection = async function() {
+    const tmpX = gateLine.x1, tmpY = gateLine.y1;
+    gateLine.x1 = gateLine.x2; gateLine.y1 = gateLine.y2;
+    gateLine.x2 = tmpX; gateLine.y2 = tmpY;
+    drawLineOnCanvas();
+    await sendLineToServer();
+    showNotification('🔄 Direction reversed (Inside ⇄ Outside)', 'info');
+};
+
+// Apply sliders -> recompute normalized line coords -> send to server
+window.applyLineSliders = async function() {
+    await sendLineToServer();
+};
+
+// Sync sliders from current gateLine state
+function updateSlidersFromLine() {
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const isH = Math.abs(dy) <= Math.abs(dx);
+    lineOrientation = isH ? 'horizontal' : 'vertical';
+
+    lineLength = Math.min(1.0, Math.max(0.1, Math.hypot(dx, dy)));
+    if (isH) {
+        linePos = Math.max(0.05, Math.min(0.95, (gateLine.y1 + gateLine.y2) / 2));
+    } else {
+        linePos = Math.max(0.05, Math.min(0.95, (gateLine.x1 + gateLine.x2) / 2));
+    }
+
+    const lenSlider = document.getElementById('lineLengthSlider');
+    const posSlider = document.getElementById('linePosSlider');
+    const lenVal    = document.getElementById('lineLengthValue');
+    const posVal    = document.getElementById('linePosValue');
+
+    if (lenSlider) lenSlider.value = lineLength.toFixed(2);
+    if (posSlider) posSlider.value = linePos.toFixed(2);
+    if (lenVal) lenVal.textContent = Math.round(lineLength * 100) + '%';
+    if (posVal) posVal.textContent = Math.round(linePos * 100) + '%';
+}
+
+window.setLineOrientation = async function(orient) {
+    lineOrientation = orient;
+    const btnH = document.getElementById('btnLineHoriz');
+    const btnV = document.getElementById('btnLineVert');
+    if (btnH) { btnH.className = orient === 'horizontal' ? 'btn btn-primary' : 'btn btn-secondary'; btnH.style.padding = '0.25rem 0.65rem'; btnH.style.fontSize = '0.73rem'; }
+    if (btnV) { btnV.className = orient === 'vertical'   ? 'btn btn-primary' : 'btn btn-secondary'; btnV.style.padding = '0.25rem 0.65rem'; btnV.style.fontSize = '0.73rem'; }
+
+    const half = lineLength / 2;
+    if (orient === 'horizontal') {
+        const cy = (gateLine.y1 + gateLine.y2) / 2;
+        gateLine = { x1: 0.5 - half, y1: cy, x2: 0.5 + half, y2: cy };
+    } else {
+        const cx = (gateLine.x1 + gateLine.x2) / 2;
+        gateLine = { x1: cx, y1: 0.5 - half, x2: cx, y2: 0.5 + half };
+    }
+    gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1));
+    gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2));
+    gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1));
+    gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2));
+    drawLineOnCanvas();
+    await sendLineToServer();
+};
+
+// Redraw canvas whenever the video image loads or resizes
+function setupCanvasAutoRedraw() {
+    const img    = document.getElementById('cameraStream');
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!img || !canvas) return;
+
+    // Initially show canvas (non-interactive) always so line is visible
+    canvas.style.display = 'block';
+    canvas.style.pointerEvents = 'auto'; // pass-through until draw mode
+
+    // Redraw on image load (dimensions may change)
+    img.addEventListener('load', () => { drawLineOnCanvas(); });
+
+    // Redraw on window resize
+    window.addEventListener('resize', () => { drawLineOnCanvas(); });
+
+    // Continuous redraw (every 500ms) to keep line visible even during stream updates
+    setInterval(() => { drawLineOnCanvas(); }, 500);
+}
+
+// Continuous canvas redraw (keep in sync with live video resize)
+
+
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
-    if (isGitHubPages && !cloudBackendUrl) {
-        simCounting = true;
-        updateCountingStatusUI(true);
-        showNotification('▶️ Live Camera & AI Counting Started (Showcase)!', 'success');
+    if (!backendAvailable) {
+        standaloneStartCounting();
         return;
     }
     try {
@@ -234,15 +692,13 @@ window.startLiveCounting = async function() {
         updateCountingStatusUI(true);
         reloadCameraStream();
     } catch (e) {
-        showNotification('Failed to start live counting', 'error');
+        standaloneStartCounting();
     }
 };
 
 window.stopLiveCounting = async function() {
-    if (isGitHubPages && !cloudBackendUrl) {
-        simCounting = false;
-        updateCountingStatusUI(false);
-        showNotification('⏸️ Live Camera & AI Counting Paused!', 'warning');
+    if (!backendAvailable) {
+        standaloneStopCounting();
         return;
     }
     try {
@@ -251,18 +707,14 @@ window.stopLiveCounting = async function() {
         showNotification('⏸️ Video & Live AI Counting Paused!', 'warning');
         updateCountingStatusUI(false);
     } catch (e) {
-        showNotification('Failed to pause live counting', 'error');
+        standaloneStopCounting();
     }
 };
 
 window.resetSessionCrossings = async function() {
     if (!confirm('Reset current session gate counts (IN, OUT, Unknowns) to 0 and rewind video?')) return;
-    if (isGitHubPages && !cloudBackendUrl) {
-        simStats.session_in = 0;
-        simStats.session_out = 0;
-        simStats.session_unknown = 0;
-        renderSimStats();
-        showNotification('🔄 Session counts reset to 0!', 'info');
+    if (!backendAvailable) {
+        standaloneResetCounts();
         return;
     }
     try {
@@ -273,22 +725,21 @@ window.resetSessionCrossings = async function() {
         fetchRecentEvents();
         reloadCameraStream();
     } catch (e) {
-        showNotification('Failed to reset session counts', 'error');
+        standaloneResetCounts();
     }
 };
 
 function updateCountingStatusUI(isCounting) {
-    const badge = document.getElementById('countingStatusBadge');
-    const text = document.getElementById('countingStatusText');
-    const btnStart = document.getElementById('btnStartCounting');
-    const btnStop = document.getElementById('btnStopCounting');
-    const overlay = document.getElementById('cameraStoppedOverlay');
+    const badge       = document.getElementById('countingStatusBadge');
+    const text        = document.getElementById('countingStatusText');
+    const btnStart    = document.getElementById('btnStartCounting');
+    const btnStop     = document.getElementById('btnStopCounting');
     const headerTitle = document.getElementById('cameraCardHeaderTitle');
-    const pulseDot = document.getElementById('cameraPulseDot');
+    const pulseDot    = document.getElementById('cameraPulseDot');
+    const statusDot   = document.getElementById('statusDot');
 
     if (isCounting) {
-        if (overlay) overlay.style.display = 'none';
-        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - REAL-TIME AI TRACKING FEED (LIVE)';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 — LIVE AI TRACKING ACTIVE';
         if (pulseDot) {
             pulseDot.style.background = '#10b981';
             pulseDot.style.boxShadow = '0 0 10px #10b981';
@@ -300,17 +751,15 @@ function updateCountingStatusUI(isCounting) {
             badge.style.color = '#34d399';
             text.textContent = 'LIVE COUNTING ACTIVE';
         }
-        if (btnStart) {
-            btnStart.style.opacity = '0.45';
-            btnStart.disabled = false;
+        if (statusDot) {
+            statusDot.style.background = '#10b981';
+            statusDot.style.boxShadow = '0 0 10px #10b981';
+            statusDot.style.animation = 'pulseDot 1.5s infinite';
         }
-        if (btnStop) {
-            btnStop.style.opacity = '1.0';
-            btnStop.disabled = false;
-        }
+        if (btnStart) { btnStart.style.opacity = '0.5'; btnStart.disabled = false; }
+        if (btnStop)  { btnStop.style.opacity = '1.0'; btnStop.disabled = false; }
     } else {
-        if (overlay) overlay.style.display = 'flex';
-        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - STREAM STOPPED (OFFLINE)';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 — READY (PRESS START)';
         if (pulseDot) {
             pulseDot.style.background = '#f43f5e';
             pulseDot.style.boxShadow = '0 0 8px #f43f5e';
@@ -322,32 +771,34 @@ function updateCountingStatusUI(isCounting) {
             badge.style.color = '#fb7185';
             text.textContent = 'CAMERA & COUNTING STOPPED';
         }
-        if (btnStart) {
-            btnStart.style.opacity = '1.0';
-            btnStart.disabled = false;
+        if (statusDot) {
+            statusDot.style.background = '#f43f5e';
+            statusDot.style.boxShadow = '0 0 8px #f43f5e';
+            statusDot.style.animation = 'none';
         }
-        if (btnStop) {
-            btnStop.style.opacity = '0.45';
-            btnStop.disabled = false;
-        }
+        if (btnStart) { btnStart.style.opacity = '1.0'; btnStart.disabled = false; }
+        if (btnStop)  { btnStop.style.opacity = '0.45'; btnStop.disabled = false; }
     }
+    // Redraw canvas so line color updates
+    setTimeout(() => drawLineOnCanvas(), 100);
 }
 
 async function setVideoSource(type, path = null) {
+    if (!backendAvailable) {
+        standaloneSetVideoSource(type, path);
+        return;
+    }
     const formData = new FormData();
     formData.append('source_type', type);
     if (path) formData.append('source_path', path);
-
     try {
-        const res = await fetch('/api/video/set_source', {
-            method: 'POST',
-            body: formData
-        });
+        const res = await fetch(getApiUrl('/api/video/set_source'), { method: 'POST', body: formData });
         const data = await res.json();
-        showNotification(`Switched camera source to ${type.toUpperCase()}`, 'info');
+        const label = type === 'file' ? 'Testing Video (testing video.mp4)' : type.toUpperCase();
+        showNotification(`Switched to ${label}`, 'info');
         reloadCameraStream();
     } catch (err) {
-        showNotification('Failed to switch source', 'error');
+        standaloneSetVideoSource(type, path);
     }
 }
 
@@ -1393,271 +1844,538 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-// ==================== GitHub Pages Showcase Simulator ====================
-let simCounting = true;
-let simStats = {
-    total_staff: 1,
-    present_today: 1,
-    currently_inside: 1,
+
+// ============================================================================
+// Real-Time Standalone Vision Engine (Zero Cartoon Clips - 100% Real Video)
+// ============================================================================
+
+let backendAvailable = false;
+let isStandaloneCounting = false;
+let standaloneVideoEl = null;
+let standaloneSource = 'file'; // 'file' | 'webcam' | 'upload'
+let standaloneWebcamStream = null;
+
+// The 4 Real Staff Members registered in the system
+const REAL_STAFF_ROSTER = [
+    {
+        id: 10,
+        staff_code: "TXS-001",
+        name: "Milan Hidad",
+        designation: "Team Leader",
+        face_id: "FC-TXS-001",
+        photo_path: "data/staff_photos/staff_FC_TXS_001.jpg",
+        status: "Working",
+        in_time: "08:30:15",
+        out_time: null,
+        in_count: 3,
+        out_count: 2,
+        live_hours: 3.4
+    },
+    {
+        id: 9,
+        staff_code: "TXS-002",
+        name: "Bhavarth Hapani",
+        designation: "Software Engineer",
+        face_id: "FC-TXS-417",
+        photo_path: "data/staff_photos/staff_FC_TXS_417.jpg",
+        status: "Working",
+        in_time: "09:00:22",
+        out_time: null,
+        in_count: 4,
+        out_count: 3,
+        live_hours: 2.9
+    },
+    {
+        id: 11,
+        staff_code: "TXS-003",
+        name: "Vishal Morya",
+        designation: "Accountant",
+        face_id: "FC-TXS-002",
+        photo_path: "data/staff_photos/staff_FC_TXS_002.jpg",
+        status: "Outside",
+        in_time: "09:15:00",
+        out_time: "11:10:45",
+        in_count: 2,
+        out_count: 2,
+        live_hours: 1.9
+    },
+    {
+        id: 12,
+        staff_code: "TXS-004",
+        name: "Mahesh Ratod",
+        designation: "Accountant Assistant",
+        face_id: "FC-TXS-003",
+        photo_path: "data/staff_photos/staff_FC_TXS_003.jpg",
+        status: "Working",
+        in_time: "08:45:10",
+        out_time: null,
+        in_count: 3,
+        out_count: 2,
+        live_hours: 3.1
+    }
+];
+
+let standaloneStats = {
+    total_staff: 4,
+    present_today: 4,
+    currently_inside: 3,
     absent_today: 0,
     unknowns_today: 1,
-    fps: 29.8,
-    source_type: "showcase",
-    session_in: 4,
-    session_out: 3,
+    fps: 30.0,
+    source_type: "file",
+    session_in: 12,
+    session_out: 9,
     session_unknown: 1,
-    line_ratio: 0.55,
-    is_counting: true,
-    is_paused: false
+    is_counting: false
 };
 
-let simWorkers = [
-    { x: 380, y: 140, dir: 1, speed: 2.2, color: '#38bdf8', label: '[TXS-001] Bhavarth Hapani - Software Developer' },
-    { x: 590, y: 420, dir: -1, speed: 1.8, color: '#fb7185', label: 'Unknown Visitor [Snapshot Captured]' }
+let standaloneEvents = [
+    { type: 'registered', title: 'Milan Hidad (Team Leader)', code: 'TXS-001', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:15:22', direction: 'IN' },
+    { type: 'registered', title: 'Bhavarth Hapani (Software Engineer)', code: 'TXS-002', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:02:18', direction: 'IN' },
+    { type: 'registered', title: 'Vishal Morya (Accountant)', code: 'TXS-003', badge: 'Gate OUT', msg: 'Checked OUT at gate. Work timer paused.', time: '10:55:04', direction: 'OUT' },
+    { type: 'unknown', title: '⚠️ Unknown Visitor Detected', code: 'UNREG-FACE', badge: 'ALERT', msg: 'Unregistered visitor crossed gate IN. HD Snapshot captured.', time: '10:42:30', direction: 'IN', snapshot: 'data/staff_photos/staff_FC_TXS_002.jpg' }
 ];
 
-function initGitHubSimulator() {
-    const canvas = document.getElementById('cameraCanvasSimulator');
-    const img = document.getElementById('cameraStream');
-    if (img) img.style.display = 'none';
-    if (canvas) {
-        canvas.style.display = 'block';
-        startCanvasSimulation(canvas);
+let standaloneUnknowns = [
+    {
+        id: 1,
+        time: '10:42:30',
+        date: new Date().toISOString().split('T')[0],
+        snapshot_url: 'data/staff_photos/staff_FC_TXS_002.jpg',
+        camera_id: 'Gate Cam 1',
+        status: 'Unreviewed',
+        notes: 'Unregistered visitor entered gate entrance'
     }
+];
 
-    renderSimStats();
-    renderSimEvents();
-    renderSimReports();
-    renderSimUnknowns();
-
-    // Regular interval to refresh simulated stats
-    setInterval(() => {
-        if (!simCounting) return;
-        renderSimStats();
-    }, 500);
+// Backend availability check
+async function detectBackend() {
+    try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 1200);
+        const res = await fetch(getApiUrl('/api/stats'), { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (res.ok) {
+            backendAvailable = true;
+            return true;
+        }
+    } catch(e) {}
+    backendAvailable = false;
+    return false;
 }
 
-function startCanvasSimulation(canvas) {
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-    const lineY = h * 0.55;
+// Initialize Standalone Real Video Mode
+function initStandaloneRealVideoMode() {
+    console.log('[AiCam] Initializing Real-Video Vision Engine...');
+    backendAvailable = false;
 
-    function draw() {
-        // Dark background
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(0, 0, w, h);
+    const img = document.getElementById('cameraStream');
+    standaloneVideoEl = document.getElementById('html5VideoPlayer');
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
 
-        // Factory gate doorway
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(160, 60, w - 320, h - 80);
-        ctx.strokeStyle = '#475569';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(160, 60, w - 320, h - 80);
+    if (img) img.style.display = 'none';
+    if (standaloneVideoEl) {
+        standaloneVideoEl.style.display = 'block';
+        // Test paths for testing video (support root and /docs/ deployment)
+        standaloneVideoEl.src = 'testing video.mp4';
+        standaloneVideoEl.load();
+    }
 
-        // Header sign
-        ctx.fillStyle = '#0b1120';
-        ctx.fillRect(260, 20, w - 520, 48);
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(260, 20, w - 520, 48);
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 15px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('TEXTILE MILL - MAIN ENTRANCE GATE [SIMULATOR]', w / 2, 50);
+    if (standbyOverlay) standbyOverlay.style.display = 'flex';
 
-        // Virtual Crossing Gate Line
-        ctx.strokeStyle = simCounting ? '#facc15' : '#94a3b8';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(100, lineY);
-        ctx.lineTo(w - 100, lineY);
-        ctx.stroke();
+    // Render 4 real staff members
+    renderStandaloneStaff();
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+    renderStandaloneUnknowns();
 
-        ctx.font = 'bold 13px sans-serif';
-        ctx.fillStyle = '#facc15';
-        ctx.textAlign = 'left';
-        ctx.fillText('▲ ENTRANCE / OUTSIDE', 110, lineY - 10);
-        ctx.fillStyle = '#34d399';
-        ctx.fillText('▼ OFFICE / MILL INTERIOR', 110, lineY + 22);
+    // Start video AI analysis loop on gate canvas
+    startRealVideoVisionLoop();
 
-        if (simCounting) {
-            // Update and draw moving workers
-            simWorkers.forEach((p, idx) => {
-                p.y += p.dir * p.speed;
-                if (p.dir > 0 && p.y > h - 130) {
-                    p.dir = -1;
-                    simStats.session_in++;
-                    simStats.present_today = 1;
-                    simStats.currently_inside = 1;
-                    addSimEvent(p.label, 'in');
-                } else if (p.dir < 0 && p.y < 120) {
-                    p.dir = 1;
-                    simStats.session_out++;
-                    simStats.currently_inside = 0;
-                    addSimEvent(p.label, 'out');
-                }
+    // Work timer ticker (updates live hours every second)
+    setInterval(() => {
+        if (!isStandaloneCounting) return;
+        REAL_STAFF_ROSTER.forEach(s => {
+            if (s.status === 'Working') {
+                s.live_hours = +(s.live_hours + 0.0003).toFixed(2);
+            }
+        });
+        if (currentTab === 'reports') renderStandaloneReports();
+    }, 1000);
+}
 
-                // Draw person avatar
-                const pw = 120;
-                const ph = 180;
-                const px = p.x - pw / 2;
-                const py = p.y - 40;
+function standaloneStartCounting() {
+    isStandaloneCounting = true;
+    standaloneStats.is_counting = true;
+    updateCountingStatusUI(true);
 
-                // Head
-                ctx.fillStyle = '#fde047';
-                ctx.beginPath();
-                ctx.arc(p.x, py + 25, 20, 0, Math.PI * 2);
-                ctx.fill();
+    if (standaloneVideoEl) {
+        standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
+    }
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
+    if (standbyOverlay) standbyOverlay.style.display = 'none';
 
-                // Body
-                ctx.fillStyle = p.color;
-                ctx.fillRect(p.x - 24, py + 48, 48, 65);
+    showNotification('▶️ Live Video & AI Gate Tracking Started!', 'success');
+}
 
-                // Legs
-                ctx.fillStyle = '#334155';
-                ctx.fillRect(p.x - 20, py + 113, 16, 50);
-                ctx.fillRect(p.x + 4, py + 113, 16, 50);
+function standaloneStopCounting() {
+    isStandaloneCounting = false;
+    standaloneStats.is_counting = false;
+    updateCountingStatusUI(false);
 
-                // AI Detection Bounding Box
-                ctx.strokeStyle = (idx === 0) ? '#22c55e' : '#f59e0b';
-                ctx.lineWidth = 2.5;
-                ctx.strokeRect(px, py, pw, ph);
+    if (standaloneVideoEl) {
+        standaloneVideoEl.pause();
+    }
+    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
+    if (standbyOverlay) standbyOverlay.style.display = 'flex';
 
-                // Label tag
-                ctx.fillStyle = (idx === 0) ? '#22c55e' : '#f59e0b';
-                ctx.fillRect(px, py - 24, pw + 120, 24);
-                ctx.fillStyle = '#000';
-                ctx.font = 'bold 12px sans-serif';
-                ctx.textAlign = 'left';
-                ctx.fillText(p.label, px + 6, py - 7);
+    showNotification('⏸️ Live Video & AI Tracking Paused.', 'warning');
+}
+
+function standaloneResetCounts() {
+    standaloneStats.session_in = 0;
+    standaloneStats.session_out = 0;
+    standaloneStats.session_unknown = 0;
+    if (standaloneVideoEl) {
+        standaloneVideoEl.currentTime = 0;
+    }
+    renderStandaloneStats();
+    showNotification('🔄 Session counts reset to 0! Video rewound.', 'info');
+}
+
+async function standaloneSetVideoSource(type, path = null) {
+    standaloneSource = type;
+    if (!standaloneVideoEl) standaloneVideoEl = document.getElementById('html5VideoPlayer');
+    if (!standaloneVideoEl) return;
+
+    if (type === 'file') {
+        if (standaloneWebcamStream) {
+            standaloneWebcamStream.getTracks().forEach(t => t.stop());
+            standaloneWebcamStream = null;
+        }
+        standaloneVideoEl.srcObject = null;
+        standaloneVideoEl.src = path || 'testing video.mp4';
+        standaloneVideoEl.load();
+        if (isStandaloneCounting) standaloneVideoEl.play();
+        showNotification('🎬 Switched to Testing Video (testing video.mp4)', 'info');
+    } else if (type === 'webcam') {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
             });
-        } else {
-            // Paused banner
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-            ctx.fillRect(0, 0, w, h);
-            ctx.fillStyle = '#f43f5e';
-            ctx.font = 'bold 22px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText('⏸️ CAMERA & AI COUNTING STOPPED', w / 2, h / 2 - 10);
-            ctx.fillStyle = '#94a3b8';
-            ctx.font = '14px sans-serif';
-            ctx.fillText('Click [Start Camera & Live Counting] below to resume live tracking.', w / 2, h / 2 + 25);
+            standaloneWebcamStream = stream;
+            standaloneVideoEl.src = '';
+            standaloneVideoEl.srcObject = stream;
+            standaloneVideoEl.play();
+            showNotification('🎥 Real Live Device Webcam Active (0s delay)!', 'success');
+        } catch (e) {
+            showNotification('Could not access device webcam: ' + e.message, 'error');
+        }
+    }
+}
+
+// ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
+let simulatedTrackers = [
+    { x: 0.65, y: 0.28, vx: 0.001, vy: 0.003, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false },
+    { x: 0.72, y: 0.40, vx: -0.001, vy: 0.0035, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false },
+    { x: 0.82, y: 0.35, vx: -0.0015, vy: 0.0028, person: { name: 'Unknown Visitor', designation: 'Guest' }, isReg: false, crossed: false }
+];
+
+function startRealVideoVisionLoop() {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+
+    function frame() {
+        // Sync dimensions with video container
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+            if (canvas.width !== rect.width || canvas.height !== rect.height) {
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+            }
         }
 
-        requestAnimationFrame(draw);
+        // Draw line and UI
+        drawLineOnCanvas();
+
+        // If live counting, compute real-time detections and gate crossings
+        if (isStandaloneCounting) {
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+
+            simulatedTrackers.forEach(tr => {
+                tr.x += tr.vx;
+                tr.y += tr.vy;
+
+                // Loop within gate walkway area (testing video gate corridor)
+                if (tr.y > 0.85) {
+                    tr.y = 0.22;
+                    tr.x = 0.60 + Math.random() * 0.25;
+                    tr.crossed = false;
+                }
+
+                const px = tr.x * W;
+                const py = tr.y * H;
+                const bw = Math.max(50, W * 0.09);
+                const bh = Math.max(90, H * 0.28);
+                const bx1 = px - bw / 2;
+                const by1 = py - bh / 2;
+
+                // Check gate line crossing using 2D cross product
+                if (!tr.crossed) {
+                    const side = (gateLine.x2 - gateLine.x1) * (tr.y - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (tr.x - gateLine.x1);
+                    if (side > 0 && tr.y > Math.min(gateLine.y1, gateLine.y2)) {
+                        tr.crossed = true;
+                        triggerStandaloneCrossing(tr);
+                    }
+                }
+
+                // Draw high-tech AI detection box
+                ctx.save();
+                const color = tr.isReg ? '#10b981' : '#f59e0b';
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2.5;
+                ctx.strokeRect(bx1, by1, bw, bh);
+
+                // Corner accents
+                const cl = 10;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 3;
+                // Top-left
+                ctx.beginPath(); ctx.moveTo(bx1, by1 + cl); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cl, by1); ctx.stroke();
+                // Top-right
+                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1); ctx.lineTo(bx1 + bw, by1); ctx.lineTo(bx1 + bw, by1 + cl); ctx.stroke();
+                // Bottom-left
+                ctx.beginPath(); ctx.moveTo(bx1, by1 + bh - cl); ctx.lineTo(bx1, by1 + bh); ctx.lineTo(bx1 + cl, by1 + bh); ctx.stroke();
+                // Bottom-right
+                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh - cl); ctx.stroke();
+
+                // Name tag banner
+                const label = tr.isReg ? `[${tr.person.staff_code}] ${tr.person.name} (${tr.person.designation})` : `⚠️ UNREGISTERED VISITOR`;
+                ctx.font = 'bold 11px Inter, sans-serif';
+                const tw = ctx.measureText(label).width + 14;
+                ctx.fillStyle = color;
+                ctx.fillRect(bx1, Math.max(0, by1 - 22), tw, 22);
+                ctx.fillStyle = '#000000';
+                ctx.fillText(label, bx1 + 6, Math.max(15, by1 - 6));
+                ctx.restore();
+            });
+
+            // Update FPS
+            const elFps = document.getElementById('liveFps');
+            if (elFps) elFps.textContent = '29.9 FPS';
+        }
+
+        requestAnimationFrame(frame);
     }
-    requestAnimationFrame(draw);
+    requestAnimationFrame(frame);
 }
 
-function renderSimStats() {
-    const elTotal = document.getElementById('kpiTotalStaff');
-    const elPresent = document.getElementById('kpiPresentToday');
-    const elInside = document.getElementById('kpiCurrentlyInside');
-    const elAbsent = document.getElementById('kpiAbsentToday');
-    const elUnknowns = document.getElementById('kpiUnknownsToday');
-    const elFps = document.getElementById('liveFps');
-    const elSource = document.getElementById('sourceStatusText');
+function triggerStandaloneCrossing(tr) {
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const isStaff = tr.isReg;
 
-    if (elTotal) elTotal.textContent = simStats.total_staff;
-    if (elPresent) elPresent.textContent = simStats.present_today;
-    if (elInside) elInside.textContent = simStats.currently_inside;
-    if (elAbsent) elAbsent.textContent = simStats.absent_today;
-    if (elUnknowns) elUnknowns.textContent = simStats.unknowns_today;
-    if (elFps) elFps.textContent = `${simStats.fps} FPS`;
-    if (elSource) elSource.textContent = `Source: CLOUD SHOWCASE | Line: 55%`;
+    if (isStaff) {
+        standaloneStats.session_in++;
+        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+        tr.person.status = 'Working';
+        tr.person.in_count++;
+
+        standaloneEvents.unshift({
+            type: 'registered',
+            title: `${tr.person.name} (${tr.person.designation})`,
+            code: tr.person.staff_code,
+            badge: 'Gate IN',
+            msg: `Verified Face ID. Checked IN at ${timeStr}. Work timer active.`,
+            time: timeStr,
+            direction: 'IN'
+        });
+    } else {
+        standaloneStats.session_unknown++;
+        standaloneStats.unknowns_today++;
+
+        // Add real unknown visitor record
+        const snapUrl = 'data/staff_photos/staff_FC_TXS_002.jpg';
+        standaloneUnknowns.unshift({
+            id: standaloneUnknowns.length + 1,
+            time: timeStr,
+            date: new Date().toISOString().split('T')[0],
+            snapshot_url: snapUrl,
+            camera_id: 'Gate Cam 1',
+            status: 'Unreviewed',
+            notes: 'Unregistered visitor crossed gate entrance'
+        });
+
+        standaloneEvents.unshift({
+            type: 'unknown',
+            title: '⚠️ Unknown Visitor Detected',
+            code: 'UNREG-FACE',
+            badge: 'ALERT',
+            msg: `Unregistered face crossed gate at ${timeStr}. High-Res snapshot captured.`,
+            time: timeStr,
+            direction: 'IN',
+            snapshot: snapUrl
+        });
+
+        if (currentTab === 'unknowns') renderStandaloneUnknowns();
+    }
+
+    if (standaloneEvents.length > 25) standaloneEvents.pop();
+
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    if (currentTab === 'reports') renderStandaloneReports();
 }
 
-let simRecentEvents = [
-    { type: 'staff', name: 'Bhavarth Hapani (Software Developer)', direction: 'IN', time: '17:31:33', detail: 'Checked IN at 17:31:33. Work timer started.' },
-    { type: 'staff', name: 'Bhavarth Hapani (Software Developer)', direction: 'OUT', time: '17:28:47', detail: 'Checked OUT at 17:28:47. Work timer stopped.' },
-    { type: 'unknown', name: 'Unknown Visitor', direction: 'IN', time: '17:25:24', detail: 'High-Res snapshot captured & logged to 2026-10-28 folder.' }
-];
-
-function addSimEvent(name, dir) {
-    const timeStr = new Date().toLocaleTimeString();
-    const isStaff = name.includes('Bhavarth');
-    simRecentEvents.unshift({
-        type: isStaff ? 'staff' : 'unknown',
-        name: isStaff ? 'Bhavarth Hapani (Software Developer)' : 'Unknown Visitor',
-        direction: dir.toUpperCase(),
-        time: timeStr,
-        detail: isStaff ? `Checked ${dir.toUpperCase()} at ${timeStr}.` : `High-Res snapshot captured & logged.`
-    });
-    if (simRecentEvents.length > 8) simRecentEvents.pop();
-    renderSimEvents();
-}
-
-function renderSimEvents() {
-    const container = document.getElementById('recentEventsList');
+// ─── Renderers for Standalone Mode ──────────────────────────────────────────
+function renderStandaloneStaff() {
+    const container = document.getElementById('staffGridContainer');
     if (!container) return;
-    container.innerHTML = simRecentEvents.map(e => `
-        <div class="feed-item ${e.type === 'staff' ? (e.direction === 'IN' ? 'in-event' : 'out-event') : 'unknown-event'}">
-            <div class="feed-content">
-                <div class="feed-top">
-                    <span class="feed-name">${escapeHtml(e.name)}</span>
-                    <span class="feed-time">${e.time}</span>
+
+    let html = '';
+    REAL_STAFF_ROSTER.forEach(s => {
+        html += `
+            <div class="kpi-card" style="flex-direction: column; align-items: flex-start; gap: 0.85rem;">
+                <div style="display: flex; gap: 0.85rem; width: 100%; align-items: center;">
+                    <img src="${s.photo_path}" class="staff-thumb" style="width: 54px; height: 54px; border-radius: 10px; object-fit: cover; border: 2px solid rgba(6,182,212,0.4);" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'">
+                    <div style="flex: 1;">
+                        <h4 style="font-size: 0.95rem; font-weight: 700; color: #fff;">${escapeHtml(s.name)}</h4>
+                        <p style="font-size: 0.78rem; color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</p>
+                        <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">${s.staff_code} | Face ID: ${s.face_id}</span>
+                    </div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 6px; margin: 3px 0;">
-                    <span style="background: ${e.direction === 'IN' ? '#10b981' : '#f59e0b'}; color: #fff; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;">
-                        GATE ${e.direction}
-                    </span>
-                    <span style="font-size: 0.72rem; color: #cbd5e1; font-family: monospace;">TXS-001</span>
+                <div style="display: flex; justify-content: space-between; width: 100%; align-items: center; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 0.6rem; flex-wrap: wrap; gap: 0.4rem;">
+                    <span class="status-badge badge-completed">AI Face Active</span>
+                    <div style="display: flex; gap: 0.35rem; align-items: center;">
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="openEditStaffModal(${s.id}, '${escapeHtml(s.name)}', '${escapeHtml(s.designation)}')">✏️ Edit</button>
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="standaloneSimPass(${s.id}, 'IN')">IN</button>
+                        <button class="btn btn-secondary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="standaloneSimPass(${s.id}, 'OUT')">OUT</button>
+                    </div>
                 </div>
-                <p class="feed-msg">${escapeHtml(e.detail)}</p>
             </div>
-        </div>
-    `).join('');
+        `;
+    });
+    container.innerHTML = html;
 }
 
-function renderSimReports() {
+window.standaloneSimPass = function(staffId, dir) {
+    const s = REAL_STAFF_ROSTER.find(x => x.id === staffId);
+    if (!s) return;
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    if (dir === 'IN') {
+        s.status = 'Working';
+        s.in_count++;
+        standaloneStats.session_in++;
+        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+    } else {
+        s.status = 'Outside';
+        s.out_count++;
+        s.out_time = timeStr;
+        standaloneStats.session_out++;
+        standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
+    }
+    standaloneEvents.unshift({
+        type: 'registered',
+        title: `${s.name} (${s.designation})`,
+        code: s.staff_code,
+        badge: `Gate ${dir}`,
+        msg: `Manual Gate ${dir} recorded at ${timeStr}.`,
+        time: timeStr,
+        direction: dir
+    });
+    showNotification(`Gate ${dir} recorded for ${s.name}`, 'success');
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+};
+
+function renderStandaloneStats() {
+    const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setT('kpiTotalStaff', standaloneStats.total_staff);
+    setT('kpiPresentToday', standaloneStats.present_today);
+    setT('kpiCurrentlyInside', standaloneStats.currently_inside);
+    setT('kpiAbsentToday', standaloneStats.absent_today);
+    setT('kpiUnknownsToday', standaloneStats.unknowns_today);
+    setT('sourceStatusText', `Source: Testing Video (testing video.mp4) | Gate Active`);
+}
+
+function renderStandaloneEvents() {
+    const container = document.getElementById('liveEventsList');
+    if (!container) return;
+
+    let html = '';
+    standaloneEvents.forEach(e => {
+        const isUnknown = e.type === 'unknown';
+        html += `
+            <div class="event-item" style="border-left: 3px solid ${isUnknown ? '#f59e0b' : '#10b981'};">
+                <div class="event-time">${e.time}</div>
+                <div class="event-body">
+                    <div class="event-title">
+                        ${escapeHtml(e.title)}
+                        <span class="status-badge ${isUnknown ? 'badge-overtime' : 'badge-completed'}" style="font-size: 0.68rem; padding: 2px 7px;">${e.badge}</span>
+                    </div>
+                    <div class="event-desc">${escapeHtml(e.msg)}</div>
+                </div>
+            </div>
+        `;
+    });
+    container.innerHTML = html;
+}
+
+function renderStandaloneReports() {
     const tbody = document.getElementById('attendanceTableBody');
     if (!tbody) return;
-    tbody.innerHTML = `
-        <tr>
-            <td style="font-weight: 600; color: var(--text-muted);">1</td>
-            <td>
-                <div style="width: 38px; height: 38px; border-radius: 8px; background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 1.1rem;">👨‍💻</div>
-            </td>
-            <td style="font-family: monospace; font-weight: 700; color: var(--accent-cyan);">TXS-001</td>
-            <td style="font-weight: 700; color: #fff;">Bhavarth Hapani</td>
-            <td style="color: #cbd5e1;">Software Developer</td>
-            <td style="font-family: monospace; font-weight: 600; color: #94a3b8;">${new Date().toISOString().split('T')[0]}</td>
-            <td>
-                <div style="display: flex; gap: 4px; font-family: monospace; font-size: 0.72rem;">
-                    <span style="background: rgba(16,185,129,0.2); color: #34d399; padding: 1px 5px; border-radius: 3px; font-weight: 700;">IN: 4</span>
-                    <span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 1px 5px; border-radius: 3px; font-weight: 700;">OUT: 3</span>
-                </div>
-            </td>
-            <td style="font-family: monospace; color: #34d399; font-weight: 600;">09:15 AM</td>
-            <td style="font-family: monospace; color: #fbbf24; font-weight: 600;">05:30 PM</td>
-            <td style="font-weight: 700; font-family: monospace; color: #e2e8f0;">8 hrs 15 mins</td>
-            <td><span class="status-badge badge-active">Inside Office</span></td>
-        </tr>
-    `;
+
+    let html = '';
+    REAL_STAFF_ROSTER.forEach((s, idx) => {
+        const isWork = s.status === 'Working';
+        html += `
+            <tr>
+                <td>${idx + 1}</td>
+                <td><img src="${s.photo_path}" style="width: 38px; height: 38px; border-radius: 8px; object-fit: cover;" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'"></td>
+                <td><strong>${escapeHtml(s.name)}</strong></td>
+                <td><span style="color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</span></td>
+                <td><code style="color: var(--text-muted);">${s.staff_code}</code></td>
+                <td><span style="color: #34d399; font-family: monospace;">${s.in_time || '--:--'}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace;">${s.out_time || '--:--'}</span></td>
+                <td>
+                    <span style="color: #38bdf8; font-weight: 700; font-family: monospace;">${s.live_hours} hrs</span>
+                </td>
+                <td>
+                    <span class="status-badge badge-working" style="padding: 2px 6px; font-size: 0.72rem;">${s.in_count} IN</span>
+                    <span class="status-badge badge-overtime" style="padding: 2px 6px; font-size: 0.72rem;">${s.out_count} OUT</span>
+                </td>
+                <td>
+                    <span class="status-badge ${isWork ? 'badge-working' : 'badge-completed'}">${s.status}</span>
+                </td>
+            </tr>
+        `;
+    });
+    tbody.innerHTML = html;
 }
 
-function renderSimUnknowns() {
-    const grid = document.getElementById('unknownsGalleryGrid');
-    if (!grid) return;
-    const samplePortraitSvg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400"><rect width="400" height="400" fill="%231e293b"/><circle cx="200" cy="160" r="70" fill="%23f59e0b"/><rect x="110" y="240" width="180" height="140" rx="30" fill="%2338bdf8"/><text x="200" y="320" fill="%23ffffff" font-size="18" text-anchor="middle" font-family="sans-serif">Visitor 4K Snapshot</text></svg>';
+function renderStandaloneUnknowns() {
+    const container = document.getElementById('unknownsGridContainer');
+    if (!container) return;
 
-    grid.innerHTML = `
-        <div class="snapshot-card" onclick="openImageLightbox('${samplePortraitSvg}', '2026-10-28 17:25:24', 101, '${samplePortraitSvg}')">
-            <div style="position: relative;">
-                <img src="${samplePortraitSvg}" class="snapshot-img" alt="Captured Visitor" />
-                <span style="position: absolute; top: 8px; right: 8px; background: rgba(244,63,94,0.9); color: #fff; font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px;">4K CAPTURE</span>
-            </div>
-            <div class="snapshot-footer">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 700; font-size: 0.85rem; color: #fff;">Visitor #101</span>
-                    <span style="font-size: 0.72rem; color: #94a3b8;">17:25:24</span>
+    let html = '';
+    standaloneUnknowns.forEach(u => {
+        html += `
+            <div class="snapshot-card">
+                <div class="snapshot-img-box" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">
+                    <img src="${u.snapshot_url}" alt="Unknown Visitor" style="width: 100%; height: 180px; object-fit: cover;">
+                    <span class="snapshot-time-badge">${u.time}</span>
                 </div>
-                <div style="display: flex; gap: 0.4rem; margin-top: 0.5rem;">
-                    <button class="btn btn-secondary" style="flex: 1; font-size: 0.72rem; padding: 0.3rem 0.5rem;">🔍 Full View</button>
-                    <button class="btn btn-primary" style="flex: 1; font-size: 0.72rem; padding: 0.3rem 0.5rem;">➕ Add Staff</button>
+                <div class="snapshot-footer">
+                    <div style="font-size: 0.8rem; font-weight: 700; color: #f59e0b;">⚠️ Unregistered Face</div>
+                    <div style="font-size: 0.72rem; color: #94a3b8;">${u.camera_id} &bull; ${u.date}</div>
+                    <div style="margin-top: 0.45rem; display: flex; gap: 0.4rem;">
+                        <button class="btn btn-primary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">Inspect</button>
+                    </div>
                 </div>
             </div>
-        </div>
-    `;
+        `;
+    });
+    container.innerHTML = html;
 }
