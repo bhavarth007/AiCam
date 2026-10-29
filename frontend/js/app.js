@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initClock();
     initTabs();
     initSourceControls();
+    setupCanvasAutoRedraw();   // ← new: keep gate line canvas always redrawn
     initStaffRegistration();
     initReports();
     initUnknowns();
@@ -134,42 +135,38 @@ function switchTab(tabId) {
     }
 }
 
-// ----------------- Live Camera & Sources -----------------
+
+// ─── Gate Line State ─────────────────────────────────────────────────────────
+// Normalized 0.0-1.0 coordinates of the gate line endpoints
+let gateLine = { x1: 0.0, y1: 0.55, x2: 1.0, y2: 0.55 };
+let lineOrientation = 'horizontal';
+let lineLength = 1.0;   // fraction of full span (0.1–1.0)
+let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
+
+// Draw mode state
+let drawModeActive = false;
+let isDragging = false;
+let dragTarget = null; // 'line' | 'p1' | 'p2' | 'new'
+let dragStartX = 0, dragStartY = 0;
+let dragOffX = 0, dragOffY = 0;
+
+// Canvas handle hit radius (in normalized units)
+const HANDLE_RADIUS_NORM = 0.025;
+
+// ─── initSourceControls ───────────────────────────────────────────────────────
 function initSourceControls() {
-    const btnWebcam = document.getElementById('btnSrcWebcam');
-    const btnSim = document.getElementById('btnSrcSim');
     const videoInput = document.getElementById('videoFileInput');
-    const lineSlider = document.getElementById('linePosSlider');
-    const lineVal = document.getElementById('linePosValue');
-
-    if (btnWebcam) {
-        btnWebcam.addEventListener('click', () => {
-            setVideoSource('webcam');
-        });
-    }
-
-    if (btnSim) {
-        btnSim.addEventListener('click', () => {
-            setVideoSource('synthetic');
-        });
-    }
 
     if (videoInput) {
         videoInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             const formData = new FormData();
             formData.append('video', file);
-
             const statusBanner = document.getElementById('sourceStatusText');
             if (statusBanner) statusBanner.textContent = 'Uploading gate CCTV video...';
-
             try {
-                const res = await fetch('/api/video/upload', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await fetch(getApiUrl('/api/video/upload'), { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.status === 'success') {
                     showNotification('Gate video uploaded and AI stream active!', 'success');
@@ -183,41 +180,487 @@ function initSourceControls() {
         });
     }
 
-    if (lineSlider) {
-        lineSlider.addEventListener('input', (e) => {
-            const val = parseFloat(e.target.value);
-            if (lineVal) lineVal.textContent = Math.round(val * 100) + '%';
-        });
+    // Fetch current line config from server and sync sliders + canvas
+    syncLineFromServer();
 
-        lineSlider.addEventListener('change', async (e) => {
-            const val = parseFloat(e.target.value);
-            const formData = new FormData();
-            formData.append('ratio', val);
-            formData.append('orientation', 'horizontal');
+    // Initialize canvas gate line overlay
+    initGateLineCanvas();
+}
 
-            await fetch('/api/tracking/set_line', {
-                method: 'POST',
-                body: formData
-            });
-            showNotification(`Gate entrance line set to ${Math.round(val * 100)}%`, 'info');
-        });
+// ─── Fetch current line state from server ─────────────────────────────────────
+async function syncLineFromServer() {
+    try {
+        const res = await fetch(getApiUrl('/api/tracking/get_line'));
+        const d = await res.json();
+        gateLine = { x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2 };
+        lineOrientation = d.orientation || 'horizontal';
+        linePos = d.ratio || 0.55;
+        // Estimate length from line coords
+        const dx = d.x2 - d.x1;
+        const dy = d.y2 - d.y1;
+        lineLength = Math.min(1.0, Math.max(0.1, Math.sqrt(dx*dx + dy*dy)));
+        updateSlidersFromLine();
+        drawLineOnCanvas();
+    } catch(e) {}
+}
+
+// ─── Gate Line Canvas Interactive System ─────────────────────────────────────
+function initGateLineCanvas() {
+    const wrapper = document.getElementById('videoWrapper');
+    const canvas  = document.getElementById('gateLineCanvas');
+    if (!canvas || !wrapper) return;
+
+    // Always draw line (even when draw mode is off) - using a transparent overlay
+    // that shows endpoint handles but doesn't block pointer when draw mode is off
+    drawLineOnCanvas();
+
+    // Mouse events for dragging
+    canvas.addEventListener('mousedown',  onCanvasMouseDown);
+    canvas.addEventListener('mousemove',  onCanvasMouseMove);
+    canvas.addEventListener('mouseup',    onCanvasMouseUp);
+    canvas.addEventListener('mouseleave', onCanvasMouseUp);
+
+    // Touch events for mobile
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onCanvasMouseDown(touchToMouse(e)); }, { passive: false });
+    canvas.addEventListener('touchmove',  (e) => { e.preventDefault(); onCanvasMouseMove(touchToMouse(e)); }, { passive: false });
+    canvas.addEventListener('touchend',   (e) => { e.preventDefault(); onCanvasMouseUp(touchToMouse(e));   }, { passive: false });
+}
+
+function touchToMouse(e) {
+    const t = e.touches[0] || e.changedTouches[0];
+    return { clientX: t.clientX, clientY: t.clientY, preventDefault: () => e.preventDefault() };
+}
+
+// Convert canvas pixel pos to normalized (0-1)
+function canvasPxToNorm(canvas, px, py) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: (px - rect.left) / rect.width,
+        y: (py - rect.top)  / rect.height
+    };
+}
+
+// Hit test: is (nx,ny) near an endpoint or line body?
+function hitTest(nx, ny) {
+    const { x1, y1, x2, y2 } = gateLine;
+    const r = HANDLE_RADIUS_NORM;
+
+    // Check endpoint 1
+    if (Math.hypot(nx - x1, ny - y1) < r) return 'p1';
+    // Check endpoint 2
+    if (Math.hypot(nx - x2, ny - y2) < r) return 'p2';
+    // Check line body (within r distance)
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx*dx + dy*dy;
+    if (len2 > 0) {
+        const t = Math.max(0, Math.min(1, ((nx-x1)*dx + (ny-y1)*dy) / len2));
+        const projX = x1 + t*dx, projY = y1 + t*dy;
+        if (Math.hypot(nx - projX, ny - projY) < r * 1.5) return 'line';
     }
+    return null;
+}
 
-    // Live Counting & Video Controls
-    const btnStart = document.getElementById('btnStartCounting');
-    const btnStop = document.getElementById('btnStopCounting');
-    const btnReset = document.getElementById('btnResetSessionCounts');
+let sendLineTimeout = null;
+function throttledSendLineToServer() {
+    if (sendLineTimeout) return;
+    sendLineTimeout = setTimeout(() => {
+        sendLineTimeout = null;
+        sendLineToServer();
+    }, 60);
+}
 
-    if (btnStart) {
-        btnStart.addEventListener('click', () => window.startLiveCounting());
-    }
-    if (btnStop) {
-        btnStop.addEventListener('click', () => window.stopLiveCounting());
-    }
-    if (btnReset) {
-        btnReset.addEventListener('click', () => window.resetSessionCrossings());
+function onCanvasMouseDown(e) {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+    const { x: nx, y: ny } = canvasPxToNorm(canvas, e.clientX, e.clientY);
+
+    // Hit test allows dragging endpoints or whole line ANY TIME directly on video
+    const hit = hitTest(nx, ny);
+    if (hit) {
+        dragTarget = hit;
+        dragOffX = nx - (hit === 'p2' ? gateLine.x2 : gateLine.x1);
+        dragOffY = ny - (hit === 'p2' ? gateLine.y2 : gateLine.y1);
+        isDragging = true;
+        dragStartX = nx;
+        dragStartY = ny;
+        canvas.style.cursor = 'grabbing';
+    } else if (drawModeActive) {
+        // Dedicated draw mode: click anywhere to draw a brand new line
+        dragTarget = 'new';
+        gateLine.x1 = nx;
+        gateLine.y1 = ny;
+        gateLine.x2 = nx;
+        gateLine.y2 = ny;
+        isDragging = true;
+        dragStartX = nx;
+        dragStartY = ny;
+        canvas.style.cursor = 'crosshair';
     }
 }
+
+function onCanvasMouseMove(e) {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+    const { x: nx, y: ny } = canvasPxToNorm(canvas, e.clientX, e.clientY);
+
+    if (!isDragging) {
+        const hit = hitTest(nx, ny);
+        if (hit === 'p1' || hit === 'p2') {
+            canvas.style.cursor = 'grab';
+        } else if (hit === 'line') {
+            canvas.style.cursor = 'move';
+        } else {
+            canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
+        }
+        return;
+    }
+
+    if (dragTarget === 'new') {
+        gateLine.x2 = Math.max(0, Math.min(1, nx));
+        gateLine.y2 = Math.max(0, Math.min(1, ny));
+    } else if (dragTarget === 'p1') {
+        gateLine.x1 = Math.max(0, Math.min(1, nx - dragOffX));
+        gateLine.y1 = Math.max(0, Math.min(1, ny - dragOffY));
+    } else if (dragTarget === 'p2') {
+        gateLine.x2 = Math.max(0, Math.min(1, nx - dragOffX));
+        gateLine.y2 = Math.max(0, Math.min(1, ny - dragOffY));
+    } else if (dragTarget === 'line') {
+        const dx = nx - dragStartX;
+        const dy = ny - dragStartY;
+        gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + dx));
+        gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + dy));
+        gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2 + dx));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + dy));
+        dragStartX = nx;
+        dragStartY = ny;
+    }
+
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+}
+
+async function onCanvasMouseUp(e) {
+    if (!isDragging) return;
+    isDragging = false;
+    dragTarget = null;
+    const canvas = document.getElementById('gateLineCanvas');
+    if (canvas) canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
+
+    // Persist final coordinates
+    await sendLineToServer();
+}
+
+function drawLineOnCanvas() {
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!canvas) return;
+
+    // Sync canvas pixel size to display size
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+        canvas.width  = rect.width;
+        canvas.height = rect.height;
+    }
+    const W = canvas.width, H = canvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const { x1, y1, x2, y2 } = gateLine;
+    const px1 = x1 * W, py1 = y1 * H;
+    const px2 = x2 * W, py2 = y2 * H;
+
+    const isActive = document.getElementById('countingStatusText')?.textContent?.includes('LIVE');
+    const lineColor = isActive ? '#00ffff' : '#fbbf24';
+    const glowColor = isActive ? 'rgba(0,255,255,0.3)' : 'rgba(251,191,36,0.3)';
+
+    // Glow
+    ctx.save();
+    ctx.strokeStyle = glowColor;
+    ctx.lineWidth = 12;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = lineColor;
+    ctx.shadowBlur = 15;
+    ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+    ctx.restore();
+
+    // Main line
+    ctx.save();
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(px1, py1); ctx.lineTo(px2, py2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Endpoint handles
+    [{ x: px1, y: py1 }, { x: px2, y: py2 }].forEach(pt => {
+        // Outer ring
+        ctx.save();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.fillStyle = lineColor;
+        ctx.shadowColor = lineColor;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        // Inner dot
+        ctx.save();
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    });
+
+    // Midpoint marker
+    const mx = (px1 + px2) / 2, my = (py1 + py2) / 2;
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Direction labels
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.max(0.001, Math.hypot(dx, dy));
+    const nx2 = -dy/len, ny2 = dx/len; // perpendicular
+
+    const OFF = 0.06;
+    const outX = ((x1+x2)/2 + nx2 * OFF) * W;
+    const outY = ((y1+y2)/2 + ny2 * OFF) * H;
+    const inX  = ((x1+x2)/2 - nx2 * OFF) * W;
+    const inY  = ((y1+y2)/2 - ny2 * OFF) * H;
+
+    ctx.font = 'bold 12px Inter, monospace';
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = '#000';
+    ctx.fillStyle = '#00e5ff';
+    ctx.fillText('OUTSIDE', Math.max(40, Math.min(W-40, outX)), Math.max(16, Math.min(H-8, outY)));
+    ctx.fillStyle = '#34d399';
+    ctx.fillText('INSIDE', Math.max(30, Math.min(W-30, inX)), Math.max(16, Math.min(H-8, inY)));
+
+    // Update coord display
+    const fmt = v => v.toFixed(2);
+    const setTxt = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setTxt('lineCoordX1', fmt(x1)); setTxt('lineCoordY1', fmt(y1));
+    setTxt('lineCoordX2', fmt(x2)); setTxt('lineCoordY2', fmt(y2));
+}
+
+// ─── Send line coords to backend ─────────────────────────────────────────────
+async function sendLineToServer() {
+    const { x1, y1, x2, y2 } = gateLine;
+    const fd = new FormData();
+    fd.append('x1', x1); fd.append('y1', y1);
+    fd.append('x2', x2); fd.append('y2', y2);
+    try {
+        await fetch(getApiUrl('/api/tracking/set_line_coords'), { method: 'POST', body: fd });
+        showNotification(`Gate line updated!`, 'info');
+    } catch(e) {}
+}
+
+// ─── Toggle draw mode ────────────────────────────────────────────────────────
+window.toggleGateLineDrawMode = function() {
+    drawModeActive = !drawModeActive;
+    const canvas = document.getElementById('gateLineCanvas');
+    const badge  = document.getElementById('drawModeBadge');
+    const btn    = document.getElementById('btnToggleDrawMode');
+
+    if (drawModeActive) {
+        if (canvas) {
+            canvas.style.display = 'block';
+            canvas.style.pointerEvents = 'auto';
+            canvas.style.cursor = 'crosshair';
+        }
+        if (badge) badge.style.display = 'block';
+        if (btn) {
+            btn.textContent = '✅ Exit Draw Mode';
+            btn.style.color = '#34d399';
+            btn.style.borderColor = 'rgba(52,211,153,0.5)';
+        }
+        showNotification('✏️ Draw mode ON — drag to draw or resize the gate line', 'info');
+    } else {
+        if (canvas) {
+            canvas.style.pointerEvents = 'auto'; // let clicks pass through
+        }
+        if (badge) badge.style.display = 'none';
+        if (btn) {
+            btn.textContent = '✏️ Draw on Video';
+            btn.style.color = '#fbbf24';
+            btn.style.borderColor = 'rgba(251,191,36,0.5)';
+        }
+        showNotification('Draw mode OFF. Line saved.', 'success');
+        sendLineToServer();
+    }
+    drawLineOnCanvas();
+};
+
+// ─── Slider helpers ───────────────────────────────────────────────────────────
+// ─── Live Length & Position Sliders (Resize Small / Big & Shift Anywhere) ───
+window.onLineLengthChangeLive = function(val) {
+    lineLength = parseFloat(val);
+    const el = document.getElementById('lineLengthValue');
+    if (el) el.textContent = Math.round(lineLength * 100) + '%';
+
+    // Scale line length around its center preserving exact angle and position!
+    const cx = (gateLine.x1 + gateLine.x2) / 2;
+    const cy = (gateLine.y1 + gateLine.y2) / 2;
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const curLen = Math.hypot(dx, dy) || 0.001;
+    const cosA = dx / curLen;
+    const sinA = dy / curLen;
+    const half = lineLength / 2;
+
+    gateLine.x1 = Math.max(0, Math.min(1, cx - half * cosA));
+    gateLine.y1 = Math.max(0, Math.min(1, cy - half * sinA));
+    gateLine.x2 = Math.max(0, Math.min(1, cx + half * cosA));
+    gateLine.y2 = Math.max(0, Math.min(1, cy + half * sinA));
+
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+};
+
+window.onLineLengthInput = window.onLineLengthChangeLive;
+
+window.onLinePosChangeLive = function(val) {
+    linePos = parseFloat(val);
+    const el = document.getElementById('linePosValue');
+    if (el) el.textContent = Math.round(linePos * 100) + '%';
+
+    // Shift line perpendicular to its axis or along position axis
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const isH = Math.abs(dy) <= Math.abs(dx);
+
+    if (isH) {
+        const curCy = (gateLine.y1 + gateLine.y2) / 2;
+        const shiftY = linePos - curCy;
+        gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + shiftY));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + shiftY));
+    } else {
+        const curCx = (gateLine.x1 + gateLine.x2) / 2;
+        const shiftX = linePos - curCx;
+        gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + shiftX));
+        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + shiftX));
+    }
+
+    drawLineOnCanvas();
+    throttledSendLineToServer();
+};
+
+window.onLinePosInput = window.onLinePosChangeLive;
+
+window.setGatePreset = async function(preset) {
+    if (preset === 'right_gate') {
+        // Vertical line at right gate area (gate entrance in testing video)
+        gateLine = { x1: 0.68, y1: 0.22, x2: 0.68, y2: 0.88 };
+        lineOrientation = 'vertical';
+    } else if (preset === 'center_h') {
+        gateLine = { x1: 0.10, y1: 0.55, x2: 0.90, y2: 0.55 };
+        lineOrientation = 'horizontal';
+    } else if (preset === 'center_v') {
+        gateLine = { x1: 0.50, y1: 0.15, x2: 0.50, y2: 0.85 };
+        lineOrientation = 'vertical';
+    }
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    await sendLineToServer();
+    showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
+};
+
+window.flipGateLineDirection = async function() {
+    const tmpX = gateLine.x1, tmpY = gateLine.y1;
+    gateLine.x1 = gateLine.x2; gateLine.y1 = gateLine.y2;
+    gateLine.x2 = tmpX; gateLine.y2 = tmpY;
+    drawLineOnCanvas();
+    await sendLineToServer();
+    showNotification('🔄 Direction reversed (Inside ⇄ Outside)', 'info');
+};
+
+// Apply sliders -> recompute normalized line coords -> send to server
+window.applyLineSliders = async function() {
+    await sendLineToServer();
+};
+
+// Sync sliders from current gateLine state
+function updateSlidersFromLine() {
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const isH = Math.abs(dy) <= Math.abs(dx);
+    lineOrientation = isH ? 'horizontal' : 'vertical';
+
+    lineLength = Math.min(1.0, Math.max(0.1, Math.hypot(dx, dy)));
+    if (isH) {
+        linePos = Math.max(0.05, Math.min(0.95, (gateLine.y1 + gateLine.y2) / 2));
+    } else {
+        linePos = Math.max(0.05, Math.min(0.95, (gateLine.x1 + gateLine.x2) / 2));
+    }
+
+    const lenSlider = document.getElementById('lineLengthSlider');
+    const posSlider = document.getElementById('linePosSlider');
+    const lenVal    = document.getElementById('lineLengthValue');
+    const posVal    = document.getElementById('linePosValue');
+
+    if (lenSlider) lenSlider.value = lineLength.toFixed(2);
+    if (posSlider) posSlider.value = linePos.toFixed(2);
+    if (lenVal) lenVal.textContent = Math.round(lineLength * 100) + '%';
+    if (posVal) posVal.textContent = Math.round(linePos * 100) + '%';
+}
+
+window.setLineOrientation = async function(orient) {
+    lineOrientation = orient;
+    const btnH = document.getElementById('btnLineHoriz');
+    const btnV = document.getElementById('btnLineVert');
+    if (btnH) { btnH.className = orient === 'horizontal' ? 'btn btn-primary' : 'btn btn-secondary'; btnH.style.padding = '0.25rem 0.65rem'; btnH.style.fontSize = '0.73rem'; }
+    if (btnV) { btnV.className = orient === 'vertical'   ? 'btn btn-primary' : 'btn btn-secondary'; btnV.style.padding = '0.25rem 0.65rem'; btnV.style.fontSize = '0.73rem'; }
+
+    const half = lineLength / 2;
+    if (orient === 'horizontal') {
+        const cy = (gateLine.y1 + gateLine.y2) / 2;
+        gateLine = { x1: 0.5 - half, y1: cy, x2: 0.5 + half, y2: cy };
+    } else {
+        const cx = (gateLine.x1 + gateLine.x2) / 2;
+        gateLine = { x1: cx, y1: 0.5 - half, x2: cx, y2: 0.5 + half };
+    }
+    gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1));
+    gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2));
+    gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1));
+    gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2));
+    drawLineOnCanvas();
+    await sendLineToServer();
+};
+
+// Redraw canvas whenever the video image loads or resizes
+function setupCanvasAutoRedraw() {
+    const img    = document.getElementById('cameraStream');
+    const canvas = document.getElementById('gateLineCanvas');
+    if (!img || !canvas) return;
+
+    // Initially show canvas (non-interactive) always so line is visible
+    canvas.style.display = 'block';
+    canvas.style.pointerEvents = 'auto'; // pass-through until draw mode
+
+    // Redraw on image load (dimensions may change)
+    img.addEventListener('load', () => { drawLineOnCanvas(); });
+
+    // Redraw on window resize
+    window.addEventListener('resize', () => { drawLineOnCanvas(); });
+
+    // Continuous redraw (every 500ms) to keep line visible even during stream updates
+    setInterval(() => { drawLineOnCanvas(); }, 500);
+}
+
+// Continuous canvas redraw (keep in sync with live video resize)
+
 
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
@@ -278,17 +721,16 @@ window.resetSessionCrossings = async function() {
 };
 
 function updateCountingStatusUI(isCounting) {
-    const badge = document.getElementById('countingStatusBadge');
-    const text = document.getElementById('countingStatusText');
-    const btnStart = document.getElementById('btnStartCounting');
-    const btnStop = document.getElementById('btnStopCounting');
-    const overlay = document.getElementById('cameraStoppedOverlay');
+    const badge       = document.getElementById('countingStatusBadge');
+    const text        = document.getElementById('countingStatusText');
+    const btnStart    = document.getElementById('btnStartCounting');
+    const btnStop     = document.getElementById('btnStopCounting');
     const headerTitle = document.getElementById('cameraCardHeaderTitle');
-    const pulseDot = document.getElementById('cameraPulseDot');
+    const pulseDot    = document.getElementById('cameraPulseDot');
+    const statusDot   = document.getElementById('statusDot');
 
     if (isCounting) {
-        if (overlay) overlay.style.display = 'none';
-        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - REAL-TIME AI TRACKING FEED (LIVE)';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 — LIVE AI TRACKING ACTIVE';
         if (pulseDot) {
             pulseDot.style.background = '#10b981';
             pulseDot.style.boxShadow = '0 0 10px #10b981';
@@ -300,17 +742,15 @@ function updateCountingStatusUI(isCounting) {
             badge.style.color = '#34d399';
             text.textContent = 'LIVE COUNTING ACTIVE';
         }
-        if (btnStart) {
-            btnStart.style.opacity = '0.45';
-            btnStart.disabled = false;
+        if (statusDot) {
+            statusDot.style.background = '#10b981';
+            statusDot.style.boxShadow = '0 0 10px #10b981';
+            statusDot.style.animation = 'pulseDot 1.5s infinite';
         }
-        if (btnStop) {
-            btnStop.style.opacity = '1.0';
-            btnStop.disabled = false;
-        }
+        if (btnStart) { btnStart.style.opacity = '0.5'; btnStart.disabled = false; }
+        if (btnStop)  { btnStop.style.opacity = '1.0'; btnStop.disabled = false; }
     } else {
-        if (overlay) overlay.style.display = 'flex';
-        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 - STREAM STOPPED (OFFLINE)';
+        if (headerTitle) headerTitle.textContent = 'GATE CAMERA 01 — READY (PRESS START)';
         if (pulseDot) {
             pulseDot.style.background = '#f43f5e';
             pulseDot.style.boxShadow = '0 0 8px #f43f5e';
@@ -322,29 +762,28 @@ function updateCountingStatusUI(isCounting) {
             badge.style.color = '#fb7185';
             text.textContent = 'CAMERA & COUNTING STOPPED';
         }
-        if (btnStart) {
-            btnStart.style.opacity = '1.0';
-            btnStart.disabled = false;
+        if (statusDot) {
+            statusDot.style.background = '#f43f5e';
+            statusDot.style.boxShadow = '0 0 8px #f43f5e';
+            statusDot.style.animation = 'none';
         }
-        if (btnStop) {
-            btnStop.style.opacity = '0.45';
-            btnStop.disabled = false;
-        }
+        if (btnStart) { btnStart.style.opacity = '1.0'; btnStart.disabled = false; }
+        if (btnStop)  { btnStop.style.opacity = '0.45'; btnStop.disabled = false; }
     }
+    // Redraw canvas so line color updates
+    setTimeout(() => drawLineOnCanvas(), 100);
 }
 
 async function setVideoSource(type, path = null) {
     const formData = new FormData();
     formData.append('source_type', type);
     if (path) formData.append('source_path', path);
-
+    // For 'file' with no path, backend uses testing video.mp4 automatically
     try {
-        const res = await fetch('/api/video/set_source', {
-            method: 'POST',
-            body: formData
-        });
+        const res = await fetch(getApiUrl('/api/video/set_source'), { method: 'POST', body: formData });
         const data = await res.json();
-        showNotification(`Switched camera source to ${type.toUpperCase()}`, 'info');
+        const label = type === 'file' ? 'Testing Video (testing video.mp4)' : type.toUpperCase();
+        showNotification(`Switched to ${label}`, 'info');
         reloadCameraStream();
     } catch (err) {
         showNotification('Failed to switch source', 'error');

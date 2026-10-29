@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=3.2">
+  <link rel="stylesheet" href="./css/style.css?v=4.1">
 </head>
 <body>
 
@@ -148,76 +148,114 @@
             </span>
           </div>
 
-          <div class="video-container" style="position: relative;">
-            <img id="cameraStream" src="/api/video_feed" alt="Live AI Camera Stream" />
-            <canvas id="cameraCanvasSimulator" width="960" height="540" style="display: none; width: 100%; height: auto; max-height: 480px; object-fit: contain; background: #0b1120; border-radius: 8px;"></canvas>
-            
-            <!-- Standby / Stopped Camera Overlay -->
-            <div id="cameraStoppedOverlay" class="camera-stopped-overlay" style="display: none;">
-              <div class="stopped-modal-card">
-                <div class="stopped-icon-pulse">
-                  <svg width="42" height="42" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="10" y1="15" x2="10" y2="9"></line>
-                    <line x1="14" y1="15" x2="14" y2="9"></line>
-                  </svg>
-                </div>
-                <h3 style="font-size: 1.25rem; font-weight: 700; color: #fff; margin-bottom: 0.4rem;">Live Camera & AI Counting Stopped</h3>
-                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.2rem; line-height: 1.5;">
-                  Live camera stream and attendance logging are offline. Click the button below to turn on the live camera and resume counting.
-                </p>
-                <button class="btn btn-emerald" style="padding: 0.65rem 1.4rem; font-size: 0.92rem; font-weight: 700; gap: 0.5rem; margin: 0 auto; box-shadow: 0 4px 14px rgba(16,185,129,0.4);" onclick="startLiveCounting()">
-                  <span>▶️</span> Start Camera & Live Counting
-                </button>
-              </div>
+                    <!-- Video + Interactive Canvas Overlay -->
+          <div id="videoWrapper" style="position: relative; width: 100%; background: #0a0f1a; border-radius: 10px; overflow: hidden; user-select: none;">
+            <img id="cameraStream"
+                 src="/api/video_feed"
+                 alt="Live AI Camera Stream"
+                 style="display: block; width: 100%; height: auto; max-height: 500px; object-fit: contain; border-radius: 10px;" />
+            <canvas id="gateLineCanvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 10px; cursor: default; z-index: 10; display: block; pointer-events: auto;"></canvas>
+            </canvas>
+            <div id="drawModeBadge" style="display: none; position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 20; background: rgba(251,191,36,0.95); color: #000; font-size: 0.76rem; font-weight: 800; padding: 5px 14px; border-radius: 20px; pointer-events: none; white-space: nowrap;">
+              &#9998; DRAW MODE: Click &amp; drag to draw gate line &mdash; Drag endpoints to resize
             </div>
           </div>
 
-          <div class="cam-controls-bar" style="flex-direction: column; gap: 0.75rem; align-items: stretch;">
-            <!-- Row 1: Live Video Playback & Counting Control Bar -->
+          <!-- Controls Bar -->
+          <div class="cam-controls-bar" style="flex-direction: column; gap: 0.75rem; align-items: stretch; padding-top: 0.75rem;">
+
+            <!-- Row 1: Start / Stop / Reset -->
             <div style="display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; background: rgba(15,23,42,0.92); padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
               <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-                <span style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-right: 0.2rem;">Live Video & Counting:</span>
+                <span style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-right: 0.2rem;">Live Video &amp; Counting:</span>
                 <button id="btnStartCounting" class="btn btn-emerald" style="padding: 0.45rem 0.95rem; font-weight: 700; font-size: 0.82rem;" onclick="startLiveCounting()">
-                  <span>▶️</span> Start Camera & Live Counting
+                  &#9654; Start Camera &amp; Live Counting
                 </button>
                 <button id="btnStopCounting" class="btn btn-rose" style="padding: 0.45rem 0.95rem; font-weight: 700; font-size: 0.82rem;" onclick="stopLiveCounting()">
-                  <span>⏹️</span> Stop Camera & Counting
+                  &#9632; Stop &amp; Pause
                 </button>
                 <button id="btnResetSessionCounts" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;" onclick="resetSessionCrossings()">
-                  <span>🔄</span> Reset Counts to 0
+                  &#8635; Reset Counts
                 </button>
               </div>
-
-              <div id="countingStatusBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; color: #34d399; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); padding: 3px 10px; border-radius: 20px;">
-                <span class="pulse-dot"></span>
-                <span id="countingStatusText">LIVE COUNTING ACTIVE</span>
+              <div id="countingStatusBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; color: #fb7185; background: rgba(244,63,94,0.15); border: 1px solid rgba(244,63,94,0.3); padding: 3px 10px; border-radius: 20px;">
+                <span class="pulse-dot" id="statusDot" style="background: #f43f5e; box-shadow: 0 0 8px #f43f5e; animation: none;"></span>
+                <span id="countingStatusText">CAMERA &amp; COUNTING STOPPED</span>
               </div>
             </div>
 
-            <!-- Row 2: Source Selector Buttons & Gate Line Slider -->
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
-              <div class="source-selector">
-                <button id="btnSrcWebcam" class="btn btn-secondary" onclick="setVideoSource('webcam')">
-                  <span>📹</span> Live Webcam
+            <!-- Row 2: Source + Gate Line Editor -->
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.75rem;">
+
+              <!-- Source selector -->
+              <div class="source-selector" style="flex-wrap: wrap;">
+                <button id="btnSrcTestVideo" class="btn btn-primary" onclick="setVideoSource('file')" title="Load testing video.mp4">
+                  &#127910; Testing Video
                 </button>
-                <label for="videoFileInput" class="btn btn-primary" style="margin: 0; cursor: pointer;">
-                  <span>📁</span> Upload Gate Video
+                <button id="btnSrcWebcam" class="btn btn-secondary" onclick="setVideoSource('webcam')">
+                  &#128249; Live Webcam
+                </button>
+                <label for="videoFileInput" class="btn btn-secondary" style="margin: 0; cursor: pointer;">
+                  &#128193; Upload Video
                 </label>
                 <input type="file" id="videoFileInput" accept="video/*" style="display: none;" />
                 <button id="btnSrcSim" class="btn btn-secondary" onclick="setVideoSource('synthetic')">
-                  <span>🏭</span> Mill Gate Simulation
+                  &#127981; Simulation
                 </button>
               </div>
 
-              <!-- Gate Line Adjustment Slider -->
-              <div style="display: flex; align-items: center; gap: 0.75rem;">
-                <span style="font-size: 0.8rem; color: #cbd5e1; font-weight: 600;">Gate Line Position:</span>
-                <input type="range" id="linePosSlider" min="0.2" max="0.8" step="0.05" value="0.55" style="width: 110px; accent-color: var(--accent-cyan); cursor: pointer;" />
-                <span id="linePosValue" style="font-size: 0.8rem; font-family: monospace; color: var(--accent-cyan); font-weight: 700;">55%</span>
+              <!-- Gate Line Editor Panel -->
+              <div id="gateLinePanel" style="background: rgba(6,182,212,0.07); border: 1px solid rgba(6,182,212,0.25); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 310px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.78rem; font-weight: 700; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">&#127919; Gate Line Editor</span>
+                  <button id="btnToggleDrawMode" class="btn btn-secondary"
+                          style="padding: 0.3rem 0.7rem; font-size: 0.73rem; font-weight: 700; border-color: rgba(251,191,36,0.5); color: #fbbf24;"
+                          onclick="toggleGateLineDrawMode()">
+                    &#9998; Draw on Video
+                  </button>
+                </div>
+
+                <!-- Line length slider -->
+                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8596; Length:</span>
+                  <input type="range" id="lineLengthSlider" min="0.10" max="1.0" step="0.01" value="0.70" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onLineLengthChangeLive(this.value)" onchange="sendLineToServer()" />
+                  <span id="lineLengthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">100%</span>
+                </div>
+
+                <!-- Line position slider -->
+                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8597; Position:</span>
+                  <input type="range" id="linePosSlider" min="0.05" max="0.95" step="0.01" value="0.55" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onLinePosChangeLive(this.value)" onchange="sendLineToServer()" />
+                  <span id="linePosValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">55%</span>
+                </div>
+
+                <!-- Orientation buttons -->
+                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8592; Direction:</span>
+                  <button id="btnLineHoriz" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('horizontal')">&#8212; Horizontal</button>
+                  <button id="btnLineVert" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('vertical')">| Vertical</button>
+                </div>
+
+                
+                <!-- Quick Gate Presets -->
+                <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">Presets:</span>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #38bdf8;" onclick="setGatePreset('right_gate')">&#128682; Right Gate</button>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="setGatePreset('center_h')">&#8596; Center H</button>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="setGatePreset('center_v')">&#8597; Center V</button>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="flipGateLineDirection()" title="Flip Inside / Outside direction">&#128257; Flip Dir</button>
+                </div>
+
+                <!-- Coordinates -->
+                <div style="font-size: 0.70rem; color: #475569; font-family: monospace; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 5px;">
+                  Line: (<span id="lineCoordX1">0.00</span>, <span id="lineCoordY1">0.55</span>) &#8594;
+                  (<span id="lineCoordX2">1.00</span>, <span id="lineCoordY2">0.55</span>)
+                </div>
               </div>
+
             </div>
           </div>
+        </div>
         </div>
 
         <!-- Live Gate Events Ticker -->
@@ -624,6 +662,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=3.2"></script>
+  <script src="./js/app.js?v=4.1"></script>
 </body>
 </html>

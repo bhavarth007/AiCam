@@ -57,8 +57,8 @@ face_engine = FaceRecognitionEngine()
 tracking_engine = GateTrackingEngine(line_orientation="horizontal", line_pos_ratio=0.55)
 stream_manager = VideoStreamManager(face_engine, tracking_engine)
 
-# Auto-start stream with synthetic or webcam
-stream_manager.start(source_type="webcam")
+# Auto-start stream with testing video (looped) as default; falls back to synthetic
+stream_manager.start(source_type="file")
 
 # Mount Static Files
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
@@ -164,9 +164,50 @@ async def upload_gate_video(video: UploadFile = File(...)):
 
 @app.post("/api/tracking/set_line")
 def set_gate_line(ratio: float = Form(...), orientation: Optional[str] = Form(None)):
-    """Adjusts the position and orientation of the entrance gate line."""
+    """Adjusts the position and orientation of the entrance gate line (legacy slider API)."""
     tracking_engine.set_line_position(ratio, orientation)
-    return {"status": "success", "ratio": tracking_engine.line_pos_ratio, "orientation": tracking_engine.line_orientation}
+    return {
+        "status": "success",
+        "ratio": tracking_engine.line_pos_ratio,
+        "orientation": tracking_engine.line_orientation,
+        "x1": tracking_engine.line_x1_norm,
+        "y1": tracking_engine.line_y1_norm,
+        "x2": tracking_engine.line_x2_norm,
+        "y2": tracking_engine.line_y2_norm,
+    }
+
+@app.post("/api/tracking/set_line_coords")
+def set_gate_line_coords(
+    x1: float = Form(...),
+    y1: float = Form(...),
+    x2: float = Form(...),
+    y2: float = Form(...)
+):
+    """
+    Sets the gate line by two arbitrary normalized endpoints (0.0-1.0).
+    Supports any angle, any position, and variable length on the live frame.
+    Called by the frontend canvas drag interaction.
+    """
+    tracking_engine.set_line_coords(x1, y1, x2, y2)
+    return {
+        "status": "success",
+        "x1": tracking_engine.line_x1_norm,
+        "y1": tracking_engine.line_y1_norm,
+        "x2": tracking_engine.line_x2_norm,
+        "y2": tracking_engine.line_y2_norm,
+    }
+
+@app.get("/api/tracking/get_line")
+def get_gate_line():
+    """Returns the current gate line normalized endpoint coordinates."""
+    return {
+        "x1": tracking_engine.line_x1_norm,
+        "y1": tracking_engine.line_y1_norm,
+        "x2": tracking_engine.line_x2_norm,
+        "y2": tracking_engine.line_y2_norm,
+        "orientation": tracking_engine.line_orientation,
+        "ratio": tracking_engine.line_pos_ratio,
+    }
 
 # ----------------- Staff Registration & Face ID Endpoints -----------------
 

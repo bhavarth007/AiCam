@@ -5,55 +5,67 @@ import threading
 import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any, Generator
-from backend.config import CAMERA_INDEX, UPLOADED_VIDEOS_DIR
+from backend.config import CAMERA_INDEX, UPLOADED_VIDEOS_DIR, BASE_DIR
 from backend.face_engine import FaceRecognitionEngine
 from backend.tracking_engine import GateTrackingEngine
+
+# Path to the testing video shipped with the project
+TESTING_VIDEO_PATH = str(BASE_DIR / "testing video.mp4")
+
 
 class VideoStreamManager:
     def __init__(self, face_engine: FaceRecognitionEngine, tracking_engine: GateTrackingEngine):
         self.face_engine = face_engine
         self.tracking_engine = tracking_engine
         self.tracking_engine.face_engine = face_engine
-        
-        self.source_type = "webcam"  # "webcam", "file", "synthetic"
+
+        self.source_type = "file"
         self.source_path: Optional[str] = None
         self.cap: Optional[cv2.VideoCapture] = None
-        
+
         self.running = False
-        self.counting_active = True
-        self.is_paused = False
+        # Start NOT counting — user must press Start button
+        self.counting_active = False
+        self.is_paused = True
         self.current_frame: Optional[np.ndarray] = None
         self.current_hud_frame: Optional[np.ndarray] = None
+        self.paused_preview_frame: Optional[np.ndarray] = None
         self.current_detections = []
-        
+
         self.fps = 0.0
         self.last_frame_time = time.time()
         self.lock = threading.Lock()
-        
+
         # Background worker thread
         self.thread: Optional[threading.Thread] = None
 
-    def start(self, source_type: str = "webcam", source_path: Optional[str] = None):
+    # ─── Stream Lifecycle ─────────────────────────────────────────────────────
+
+    def start(self, source_type: str = "file", source_path: Optional[str] = None):
         """Starts or switches the video stream capture thread."""
         with self.lock:
             self.stop_stream()
             self.source_type = source_type
             self.source_path = source_path
-            
+
             if source_type == "webcam":
                 idx = int(source_path) if (source_path and source_path.isdigit()) else CAMERA_INDEX
                 self.cap = cv2.VideoCapture(idx)
-                # Check if opened, otherwise fallback to synthetic simulation
                 if not self.cap.isOpened():
-                    print(f"[VideoStream] Webcam index {idx} not available. Switching to realistic Gate Simulator.")
-                    self.source_type = "synthetic"
-                    self.cap = None
-            elif source_type == "file" and source_path and os.path.exists(source_path):
-                self.cap = cv2.VideoCapture(source_path)
-                if not self.cap.isOpened():
-                    print(f"[VideoStream] Could not open video file: {source_path}. Fallback to synthetic.")
-                    self.source_type = "synthetic"
-                    self.cap = None
+                    print(f"[VideoStream] Webcam {idx} unavailable. Falling back to testing video.")
+                    self._try_open_testing_video()
+            elif source_type == "file":
+                video_file = source_path or TESTING_VIDEO_PATH
+                if os.path.exists(video_file):
+                    self.cap = cv2.VideoCapture(video_file)
+                    self.source_path = video_file
+                    if not self.cap.isOpened():
+                        print(f"[VideoStream] Cannot open video file: {video_file}. Using synthetic.")
+                        self.source_type = "synthetic"
+                        self.cap = None
+                else:
+                    print(f"[VideoStream] File not found: {video_file}. Using synthetic.")
+                    self._try_open_testing_video()
             else:
                 self.source_type = "synthetic"
                 self.cap = None
@@ -61,12 +73,25 @@ class VideoStreamManager:
             self.running = True
             self.thread = threading.Thread(target=self._capture_and_process_loop, daemon=True)
             self.thread.start()
-            print(f"[VideoStream] Stream started with source: {self.source_type} ({self.source_path})")
+            print(f"[VideoStream] Stream started | source={self.source_type} | path={self.source_path}")
+
+    def _try_open_testing_video(self):
+        """Attempt to open the testing video; fall back to synthetic."""
+        if os.path.exists(TESTING_VIDEO_PATH):
+            self.cap = cv2.VideoCapture(TESTING_VIDEO_PATH)
+            self.source_type = "file"
+            self.source_path = TESTING_VIDEO_PATH
+            if not self.cap.isOpened():
+                self.source_type = "synthetic"
+                self.cap = None
+        else:
+            self.source_type = "synthetic"
+            self.cap = None
 
     def stop_stream(self):
         self.running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
+            self.thread.join(timeout=1.5)
         if self.cap:
             try:
                 self.cap.release()
@@ -74,23 +99,26 @@ class VideoStreamManager:
                 pass
             self.cap = None
 
+    # ─── Counting Controls ────────────────────────────────────────────────────
+
     def start_counting(self):
-        """Starts video playback and activates live AI line crossing counting."""
+        """Starts video playback and activates live AI line-crossing counting."""
         with self.lock:
             self.counting_active = True
             self.is_paused = False
+            self.paused_preview_frame = None
         print("[VideoStream] Live counting and video playback STARTED.")
 
     def stop_counting(self):
-        """Pauses video playback and suspends live AI line crossing counting and camera feed."""
+        """Pauses video playback and suspends AI line-crossing counting."""
         with self.lock:
             self.counting_active = False
             self.is_paused = True
+            self.paused_preview_frame = self.current_frame.copy() if self.current_frame is not None else None
             self.current_detections = []
         print("[VideoStream] Live counting and video playback STOPPED/PAUSED.")
 
     def toggle_counting(self) -> bool:
-        """Toggles between start and stop states."""
         with self.lock:
             if self.counting_active and not self.is_paused:
                 self.counting_active = False
@@ -110,7 +138,8 @@ class VideoStreamManager:
             self.tracking_engine.track_history.clear()
             self.tracking_engine.cooldown_locks.clear()
             self.tracking_engine.recent_events.clear()
-            
+            self.paused_preview_frame = None
+
             if self.cap and self.source_type == "file":
                 try:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -118,56 +147,40 @@ class VideoStreamManager:
                     pass
         print("[VideoStream] Session counts reset to 0. Video rewound to beginning.")
 
+    # ─── Synthetic Gate Simulator ─────────────────────────────────────────────
+
     def _generate_synthetic_gate_frame(self, frame_num: int) -> np.ndarray:
-        """
-        Generates a realistic textile mill gate scene with moving workers/staff
-        when no physical webcam or video is connected, allowing complete end-to-end testing.
-        """
         w, h = 960, 540
         frame = np.zeros((h, w, 3), dtype=np.uint8)
-        
-        # Factory / Office gate background: Floor and Wall
-        cv2.rectangle(frame, (0, 0), (w, int(h * 0.45)), (45, 52, 60), -1)  # Wall
-        cv2.rectangle(frame, (0, int(h * 0.45)), (w, h), (85, 92, 105), -1)  # Floor tiles
-        
-        # Gate doorway frame
+        cv2.rectangle(frame, (0, 0), (w, int(h * 0.45)), (45, 52, 60), -1)
+        cv2.rectangle(frame, (0, int(h * 0.45)), (w, h), (85, 92, 105), -1)
         cv2.rectangle(frame, (180, int(h * 0.15)), (w - 180, int(h * 0.95)), (110, 120, 135), 4)
-        
-        # Signboard above gate
         cv2.rectangle(frame, (280, int(h * 0.05)), (w - 280, int(h * 0.14)), (20, 30, 45), -1)
-        cv2.putText(frame, "TEXTILE MILL - MAIN ENTRANCE GATE", (295, int(h * 0.11)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 240, 255), 2)
-        
-        # Simulate walking people with cyclic motion
-        # Person 1: Walking Inward (Crossing line around frame 100-180)
+        cv2.putText(frame, "TEXTILE MILL - MAIN ENTRANCE GATE",
+                    (295, int(h * 0.11)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 240, 255), 2)
+
         t1 = (frame_num % 300) / 300.0
         p1_y = int(h * 0.20 + t1 * (h * 0.65))
         p1_x = int(w * 0.38 + np.sin(t1 * np.pi) * 20)
-        
-        # Person 2: Walking Outward (Exiting around frame 180-260)
         t2 = ((frame_num + 140) % 320) / 320.0
         p2_y = int(h * 0.85 - t2 * (h * 0.65))
         p2_x = int(w * 0.62 - np.sin(t2 * np.pi) * 15)
 
-        # Draw Person 1 (Blue shirt / Worker)
-        pw, ph = 70, 180
-        # Head
+        # Person 1
         cv2.circle(frame, (p1_x, p1_y - 60), 22, (200, 180, 160), -1)
-        # Hair
         cv2.ellipse(frame, (p1_x, p1_y - 70), (22, 14), 0, 180, 360, (25, 25, 25), -1)
-        # Body
         cv2.rectangle(frame, (p1_x - 32, p1_y - 38), (p1_x + 32, p1_y + 45), (180, 90, 40), -1)
-        # Legs
         cv2.rectangle(frame, (p1_x - 28, p1_y + 45), (p1_x - 6, p1_y + 115), (50, 50, 60), -1)
         cv2.rectangle(frame, (p1_x + 6, p1_y + 45), (p1_x + 28, p1_y + 115), (50, 50, 60), -1)
-        
-        # Draw Person 2 (Brown shirt / Staff)
+        # Person 2
         cv2.circle(frame, (p2_x, p2_y - 60), 22, (190, 175, 155), -1)
         cv2.ellipse(frame, (p2_x, p2_y - 70), (22, 14), 0, 180, 360, (30, 30, 30), -1)
         cv2.rectangle(frame, (p2_x - 30, p2_y - 38), (p2_x + 30, p2_y + 45), (50, 120, 180), -1)
         cv2.rectangle(frame, (p2_x - 26, p2_y + 45), (p2_x - 6, p2_y + 115), (60, 60, 70), -1)
         cv2.rectangle(frame, (p2_x + 6, p2_y + 45), (p2_x + 26, p2_y + 115), (60, 60, 70), -1)
-
         return frame
+
+    # ─── Main Capture Loop ────────────────────────────────────────────────────
 
     def _capture_and_process_loop(self):
         """Main camera acquisition and AI inference loop."""
@@ -177,94 +190,97 @@ class VideoStreamManager:
         while self.running:
             start_t = time.time()
 
-            # If video or counting is paused / stopped, do not show live camera
+            # ── Paused / Stopped state: emit standby frame so MJPEG img never hangs ──
             if self.is_paused or not self.counting_active:
                 h, w = 540, 960
-                standby_frame = np.zeros((h, w, 3), dtype=np.uint8)
-                standby_frame[:] = (15, 23, 42)  # Dark slate background
 
-                # Subtle grid pattern
-                for x in range(0, w, 60):
-                    cv2.line(standby_frame, (x, 0), (x, h), (26, 36, 56), 1)
-                for y in range(0, h, 60):
-                    cv2.line(standby_frame, (0, y), (w, y), (26, 36, 56), 1)
+                # Read 1 frame once for preview if not yet cached
+                if self.paused_preview_frame is None and self.cap and self.cap.isOpened():
+                    ret, vf = self.cap.read()
+                    if not ret and self.source_type == "file":
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, vf = self.cap.read()
+                    if ret and vf is not None:
+                        self.paused_preview_frame = vf.copy()
 
-                cx, cy = w // 2, h // 2
-                card_w, card_h = 660, 270
-                x1, y1 = cx - card_w // 2, cy - card_h // 2
-                x2, y2 = cx + card_w // 2, cy + card_h // 2
+                preview_frame = self.paused_preview_frame
+                if preview_frame is not None:
+                    standby_frame = preview_frame.copy()
+                    h, w = standby_frame.shape[:2]
+                else:
+                    standby_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                    standby_frame[:] = (15, 23, 42)
+                    for x in range(0, w, 60):
+                        cv2.line(standby_frame, (x, 0), (x, h), (26, 36, 56), 1)
+                    for y in range(0, h, 60):
+                        cv2.line(standby_frame, (0, y), (w, y), (26, 36, 56), 1)
 
-                # Center badge card
-                cv2.rectangle(standby_frame, (x1, y1), (x2, y2), (24, 32, 48), -1)
-                cv2.rectangle(standby_frame, (x1, y1), (x2, y2), (244, 63, 94), 2)
+                # Draw the gate line on the preview frame so user sees line and gate clearly
+                if self.tracking_engine:
+                    standby_frame = self.tracking_engine.draw_hud_overlay(standby_frame, [], is_counting=False)
 
-                # Status icon & text
-                cv2.circle(standby_frame, (cx, y1 + 50), 18, (244, 63, 94), -1)
-                cv2.circle(standby_frame, (cx, y1 + 50), 8, (255, 255, 255), -1)
-
-                cv2.putText(standby_frame, "LIVE CAMERA & COUNTING STOPPED", (cx - 245, y1 + 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.82, (255, 255, 255), 2, cv2.LINE_AA)
-                cv2.putText(standby_frame, "Camera feed is offline. Worker & visitor tracking is suspended.", (cx - 270, y1 + 160),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (148, 163, 184), 1, cv2.LINE_AA)
-                cv2.putText(standby_frame, "Click [Start Video & Counting] button below to resume.", (cx - 230, y1 + 195),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (52, 211, 153), 1, cv2.LINE_AA)
+                # Overlay subtle standby status bar at top
+                cv2.rectangle(standby_frame, (0, 0), (w, 36), (15, 23, 42), -1)
+                cv2.line(standby_frame, (0, 36), (w, 36), (244, 63, 94), 2)
+                cv2.putText(standby_frame, "STANDBY / PAUSED -- CLICK [START CAMERA & COUNTING] TO RUN",
+                            (16, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(standby_frame, "Gate line is live -- drag handles or sliders anytime",
+                            (max(16, w - 460), 24), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (52, 211, 153), 1, cv2.LINE_AA)
 
                 with self.lock:
                     self.current_hud_frame = standby_frame
                     self.fps = 0.0
                     self.current_detections = []
 
-                time.sleep(0.08)
+                time.sleep(0.05)
                 continue
 
+            # ── Active state: read frame ───────────────────────────────────────
             if self.cap and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if not ret:
                     if self.source_type == "file":
-                        # Loop video file continuously
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = self.cap.read()
                     if not ret:
                         time.sleep(0.05)
                         continue
             else:
-                # Generate synthetic test gate frame
                 frame = self._generate_synthetic_gate_frame(frame_counter)
 
             frame_counter += 1
             h, w, _ = frame.shape
 
-            # Run AI Inference every 2nd or 3rd frame for high FPS
+            # ── AI Inference (every 2nd frame) ────────────────────────────────
             skip_counter += 1
             if skip_counter % 2 == 0 or len(self.current_detections) == 0:
                 try:
-                    # Run YOLO-pose detector
                     results = self.face_engine.pose_model.track(
                         source=frame,
                         persist=True,
                         verbose=False,
-                        classes=[0]  # Person class only
+                        classes=[0]
                     )
 
                     detections = []
                     if len(results) > 0 and results[0].boxes is not None:
                         boxes = results[0].boxes.xyxy.cpu().numpy()
-                        track_ids = results[0].boxes.id.cpu().numpy().astype(int) if results[0].boxes.id is not None else list(range(len(boxes)))
-                        kpts = results[0].keypoints.data.cpu().numpy() if results[0].keypoints is not None else [None] * len(boxes)
+                        ids = results[0].boxes.id
+                        track_ids = ids.cpu().numpy().astype(int) if ids is not None else list(range(len(boxes)))
+                        kpts_data = results[0].keypoints
+                        kpts = kpts_data.data.cpu().numpy() if kpts_data is not None else [None] * len(boxes)
 
                         for idx, box in enumerate(boxes):
                             tid = int(track_ids[idx])
                             kp = kpts[idx] if idx < len(kpts) else np.zeros((17, 3))
-                            
                             cx = (box[0] + box[2]) / 2.0
                             cy = (box[1] + box[3]) / 2.0
 
-                            # Recognize face
-                            p_info = self.face_engine.process_person_detection(frame, box.tolist(), kp, capture_unknown=False)
+                            p_info = self.face_engine.process_person_detection(
+                                frame, box.tolist(), kp, capture_unknown=False)
                             p_info["track_id"] = tid
                             p_info["person_box"] = box.tolist()
 
-                            # Line Crossing Gate Tracking (only when counting is active and unpaused!)
                             if self.counting_active and not self.is_paused:
                                 self.tracking_engine.process_crossing(tid, cx, cy, w, h, p_info)
 
@@ -274,30 +290,34 @@ class VideoStreamManager:
                 except Exception as e:
                     print(f"[VideoStream] Inference error: {e}")
 
-            # Draw AI HUD overlays with active counting flag
-            is_active_counting = self.counting_active and not self.is_paused
-            hud_frame = self.tracking_engine.draw_hud_overlay(frame, self.current_detections, is_counting=is_active_counting)
+            # ── Draw HUD overlay ──────────────────────────────────────────────
+            is_active = self.counting_active and not self.is_paused
+            hud_frame = self.tracking_engine.draw_hud_overlay(
+                frame, self.current_detections, is_counting=is_active)
 
-            # Calculate FPS
             dt = time.time() - start_t
             if dt > 0:
-                cur_fps = 1.0 / dt
-                self.fps = round(self.fps * 0.85 + cur_fps * 0.15, 1)
+                self.fps = round(self.fps * 0.85 + (1.0 / dt) * 0.15, 1)
 
             with self.lock:
                 self.current_frame = frame
                 self.current_hud_frame = hud_frame
 
-            # Target ~25-30 FPS
-            sleep_needed = max(0.005, 0.033 - (time.time() - start_t))
-            time.sleep(sleep_needed)
+            time.sleep(max(0.005, 0.033 - (time.time() - start_t)))
+
+    # ─── MJPEG Encoding ──────────────────────────────────────────────────────
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         """Encodes current HUD frame to JPEG for MJPEG browser stream."""
         with self.lock:
             if self.current_hud_frame is None:
-                return None
-            ret, jpeg = cv2.imencode('.jpg', self.current_hud_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                # Emit a black frame so the img tag never hangs
+                blank = np.zeros((540, 960, 3), dtype=np.uint8)
+                blank[:] = (15, 23, 42)
+                ret, jpeg = cv2.imencode('.jpg', blank, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                return jpeg.tobytes() if ret else None
+            ret, jpeg = cv2.imencode('.jpg', self.current_hud_frame,
+                                     [int(cv2.IMWRITE_JPEG_QUALITY), 82])
             if ret:
                 return jpeg.tobytes()
         return None
@@ -307,7 +327,8 @@ class VideoStreamManager:
         with self.lock:
             if self.current_frame is None:
                 return None
-            ret, jpeg = cv2.imencode('.jpg', self.current_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            ret, jpeg = cv2.imencode('.jpg', self.current_frame,
+                                     [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             if ret:
                 return jpeg.tobytes()
         return None
@@ -319,4 +340,4 @@ class VideoStreamManager:
             if jpeg_bytes is not None:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + jpeg_bytes + b'\r\n')
-            time.sleep(0.035)
+            time.sleep(0.033)

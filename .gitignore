@@ -16,6 +16,8 @@ data/unknown_snapshots/*
 !data/unknown_snapshots/.gitkeep
 data/staff_photos/*
 !data/staff_photos/.gitkeep
+!data/staff_photos/staff_FC_TXS_*.jpg
+!data/staff_photos/demo_*.jpg
 
 # PyTorch / Ultralytics weights
 *.pt

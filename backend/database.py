@@ -126,8 +126,10 @@ def init_db():
     )
     """)
 
+
     conn.commit()
     conn.close()
+
 
 # ----------------- Staff Functions -----------------
 
@@ -150,8 +152,6 @@ def add_staff(name: str, designation: str, face_id: str, face_embedding: Optiona
     """, (staff_code, name, designation, face_id, emb_json, photo_path, now_str))
     
     staff_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
     return staff_id
 
 def get_all_staff() -> List[Dict[str, Any]]:
@@ -200,17 +200,28 @@ def delete_staff(staff_id: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE staff SET status = 'deleted' WHERE id = ?", (staff_id,))
-    conn.commit()
-    conn.close()
     return True
 
-def update_staff(staff_id: int, name: str, designation: str) -> bool:
-    """Updates staff name and designation."""
+def update_staff(staff_id: int, name: str, designation: str, face_id: Optional[str] = None, face_embedding: Optional[List[float]] = None, photo_path: Optional[str] = None) -> bool:
+    """Updates staff details, including optional embedding and photo."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE staff SET name = ?, designation = ? WHERE id = ?", (name.strip(), designation.strip(), staff_id))
-    conn.commit()
-    conn.close()
+    updates = ["name = ?", "designation = ?"]
+    params = [name.strip(), designation.strip()]
+
+    if face_id is not None:
+        updates.append("face_id = ?")
+        params.append(face_id.strip())
+    if face_embedding is not None:
+        updates.append("face_embedding = ?")
+        params.append(json.dumps(face_embedding))
+    if photo_path is not None:
+        updates.append("photo_path = ?")
+        params.append(photo_path.strip())
+
+    params.append(staff_id)
+    query = f"UPDATE staff SET {', '.join(updates)} WHERE id = ?"
+    cursor.execute(query, tuple(params))
     return True
 
 # ----------------- Attendance Logging Functions -----------------
@@ -289,8 +300,6 @@ def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] 
                     VALUES (?, ?, ?, ?, 0.0, 0, 1, 0.0, NULL, ?, 'Outside', ?, 'Exited through gate')
                 """, (staff_id, today_str, time_str, time_str, now_str, now_str))
 
-    conn.commit()
-    conn.close()
 
 def log_unknown_visitor(snapshot_path: str, camera_id: str = "Gate Cam 1", notes: str = "") -> int:
     conn = get_connection()
@@ -312,8 +321,6 @@ def log_unknown_visitor(snapshot_path: str, camera_id: str = "Gate Cam 1", notes
         VALUES ('Unknown', NULL, 'IN', ?, ?, 0.0, ?)
     """, (now_str, today_str, snapshot_path))
     
-    conn.commit()
-    conn.close()
     return record_id
 
 def delete_unknown_visitor(visitor_id: int) -> bool:
@@ -334,8 +341,6 @@ def delete_unknown_visitor(visitor_id: int) -> bool:
                 except Exception:
                     pass
     cursor.execute("DELETE FROM unknown_visitors WHERE id = ?", (visitor_id,))
-    conn.commit()
-    conn.close()
     return True
 
 def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
@@ -400,8 +405,6 @@ def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
         cursor.execute("DELETE FROM unknown_visitors")
         cursor.execute("DELETE FROM gate_events WHERE person_type = 'Unknown'")
 
-    conn.commit()
-    conn.close()
     return count
 
 def get_today_attendance(date_str: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -539,8 +542,6 @@ def add_saree_taka_record(challan_no: str, party_name: str, delivery_boy: str, p
     """, (now_str, today_str, challan_no, party_name, delivery_boy, product_type, expected_qty, counted_qty, diff, status, signed_by, notes))
     
     rec_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
     return rec_id
 
 def get_saree_taka_records(date_str: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -604,6 +605,4 @@ def clear_all_test_data(clear_staff: bool = False):
     else:
         # Delete demo seed staff TXS-001 through TXS-005
         cursor.execute("DELETE FROM staff WHERE staff_code LIKE 'TXS-00%'")
-    conn.commit()
-    conn.close()
     return True
