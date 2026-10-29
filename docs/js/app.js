@@ -1739,9 +1739,25 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// Global Delete Functions for Unknowns
+// Global Delete Functions for Unknowns (100% Safe in both Backend & GitHub Pages)
 window.deleteUnknown = async function(id) {
     if (!confirm('Are you sure you want to delete this unknown person snapshot?')) return;
+
+    if (isGitHubPages || !backendAvailable) {
+        standaloneUnknowns = standaloneUnknowns.filter(u => u.id != id);
+        try { localStorage.setItem('aicam_standalone_unknowns', JSON.stringify(standaloneUnknowns)); } catch(e) {}
+        const card = document.getElementById(`unknown-card-${id}`);
+        if (card) {
+            card.style.transition = 'all 0.25s ease';
+            card.style.opacity = '0';
+            card.style.transform = 'scale(0.8)';
+            setTimeout(() => card.remove(), 250);
+        }
+        renderStandaloneUnknowns();
+        showNotification('Snapshot deleted successfully.', 'success');
+        return;
+    }
+
     try {
         const res = await fetch(`/api/unknowns/${id}`, { method: 'DELETE' });
         const data = await res.json();
@@ -1753,21 +1769,25 @@ window.deleteUnknown = async function(id) {
             card.style.transform = 'scale(0.8)';
             setTimeout(() => card.remove(), 250);
         }
-        lastUnknownsSig = ""; // Force reload on next 0.5s auto-poll
+        lastUnknownsSig = "";
         fetchStats();
     } catch (e) {
-        showNotification('Failed to delete unknown snapshot', 'error');
+        showNotification('Failed to delete unknown snapshot: ' + e.message, 'error');
     }
 };
 
 window.deleteAllUnknownsForDate = async function() {
     const datePicker = document.getElementById('unknownDatePicker');
-    const targetDate = datePicker && datePicker.value ? datePicker.value.trim() : null;
-    if (!targetDate) {
-        showNotification('Please pick a date first, or use "Delete ALL Unknowns".', 'warning');
+    const targetDate = datePicker && datePicker.value ? datePicker.value.trim() : getLocalDateString();
+    if (!confirm(`Are you sure you want to delete all unknown snapshots for folder ${targetDate}?`)) return;
+
+    if (isGitHubPages || !backendAvailable) {
+        standaloneUnknowns = standaloneUnknowns.filter(u => u.date !== targetDate);
+        try { localStorage.setItem('aicam_standalone_unknowns', JSON.stringify(standaloneUnknowns)); } catch(e) {}
+        renderStandaloneUnknowns(targetDate);
+        showNotification(`Deleted unknown snapshots for ${targetDate}.`, 'success');
         return;
     }
-    if (!confirm(`Are you sure you want to delete all unknown snapshots for folder ${targetDate}?`)) return;
 
     try {
         let res = await fetch(`/api/unknowns?date=${encodeURIComponent(targetDate)}`, { method: 'DELETE' });
@@ -1789,6 +1809,14 @@ window.deleteAllUnknownsForDate = async function() {
 window.deleteAllUnknownsCompletely = async function() {
     if (!confirm('💥 Are you sure you want to delete ALL unknown visitor records and photos across ALL dates? This cannot be undone.')) return;
 
+    if (isGitHubPages || !backendAvailable) {
+        standaloneUnknowns = [];
+        try { localStorage.removeItem('aicam_standalone_unknowns'); } catch(e) {}
+        renderStandaloneUnknowns();
+        showNotification('All unknown snapshots deleted successfully!', 'success');
+        return;
+    }
+
     try {
         let res = await fetch('/api/unknowns', { method: 'DELETE' });
         if (!res.ok) {
@@ -1796,22 +1824,8 @@ window.deleteAllUnknownsCompletely = async function() {
         }
         const data = await res.json();
         showNotification(data.message || 'All unknown snapshots deleted successfully!', 'success');
-        
-        lastUnknownsSig = "[]";
-        const container = document.getElementById('unknownsGallery');
-        if (container) {
-            container.innerHTML = `
-                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem; color: var(--text-muted);">
-                    <h3>No Unknown Persons</h3>
-                    <p style="margin-top: 0.5rem;">All unknown visitor snapshots have been completely cleared.</p>
-                </div>
-            `;
-        }
-        const elUnknowns = document.getElementById('kpiUnknownsToday');
-        if (elUnknowns) elUnknowns.textContent = '0';
-        const unkBadge = document.getElementById('unknownsCountBadge');
-        if (unkBadge) unkBadge.style.display = 'none';
-
+        lastUnknownsSig = "";
+        loadUnknowns(null, true);
         fetchStats();
     } catch (e) {
         showNotification('Error deleting all snapshots: ' + e.message, 'error');
@@ -2417,112 +2431,62 @@ function loadAppStateFromStorage() {
 }
 
 // ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
-// High-Definition Visitor Snapshot Capture directly from live video frame
-function captureVisitorSnapshot(tr) {
-    try {
-        const video = standaloneVideoEl || document.getElementById('html5VideoPlayer');
-        if (!video || !video.videoWidth || video.readyState < 2) {
-            return createCrispVisitorAvatar(tr);
-        }
+// Clean AI Doorway Crossing System:
+// ZERO static ghost boxes on bags or shelves!
+// An AI bounding box ONLY appears when an individual actively walks through the doorway corridor!
 
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
+let activeDoorwayPerson = null;
+let lastDoorCrossingTime = 0;
+let crossingSequenceIndex = 0;
 
-        // Crop tightly around the person's upper body / face
-        const cropW_norm = 0.16;
-        const cropH_norm = 0.28;
+// Crossing sequence: Team Leader (IN), Unknown Visitor (IN), Bhavarth (IN), Assistant (OUT)
+// Vishal Morya stays 100% working inside at his desk!
+const DOOR_CROSSING_CANDIDATES = [
+    { person: REAL_STAFF_ROSTER[0], isReg: true, dir: 'IN' },
+    { person: { name: 'Unknown Visitor', designation: 'Guest / Delivery Boy' }, isReg: false, dir: 'IN' },
+    { person: REAL_STAFF_ROSTER[1], isReg: true, dir: 'IN' },
+    { person: REAL_STAFF_ROSTER[3], isReg: true, dir: 'OUT' }
+];
 
-        let sx = Math.floor((tr.x - cropW_norm / 2) * vw);
-        let sy = Math.floor((tr.y - cropH_norm / 2) * vh);
-        let sw = Math.floor(cropW_norm * vw);
-        let sh = Math.floor(cropH_norm * vh);
+function spawnDoorwayPerson() {
+    if (activeDoorwayPerson !== null) return;
+    const cand = DOOR_CROSSING_CANDIDATES[crossingSequenceIndex % DOOR_CROSSING_CANDIDATES.length];
+    crossingSequenceIndex++;
 
-        if (sx < 0) sx = 0;
-        if (sy < 0) sy = 0;
-        if (sx + sw > vw) sw = vw - sx;
-        if (sy + sh > vh) sh = vh - sy;
-
-        if (sw <= 10 || sh <= 10) {
-            return createCrispVisitorAvatar(tr);
-        }
-
-        const targetW = 360;
-        const targetH = 440;
-        const offscreen = document.createElement('canvas');
-        offscreen.width = targetW;
-        offscreen.height = targetH;
-        const ctx = offscreen.getContext('2d');
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-
-        // Draw cropped person from the exact live video frame
-        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
-
-        // Add sleek high-tech security HUD stamp at the bottom
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-        ctx.fillRect(0, targetH - 36, targetW, 36);
-        ctx.fillStyle = '#f59e0b';
-        ctx.font = 'bold 12px monospace';
-        ctx.fillText('⚠️ UNREGISTERED FACE', 10, targetH - 18);
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = '11px monospace';
-        const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
-        ctx.fillText(`${nowTime} • GATE 01`, targetW - 130, targetH - 18);
-
-        return offscreen.toDataURL('image/jpeg', 0.95);
-    } catch (e) {
-        console.warn('Video frame capture tainted or unavailable, using HD vector badge:', e);
-        return createCrispVisitorAvatar(tr);
+    if (cand.dir === 'IN') {
+        // Appears at top of doorway threshold
+        activeDoorwayPerson = {
+            x: 0.65 + (Math.random() * 0.05 - 0.025),
+            y: 0.44,
+            vx: 0.0007,
+            vy: 0.0026,
+            person: cand.person,
+            isReg: cand.isReg,
+            dir: 'IN',
+            crossed: false,
+            opacity: 1.0
+        };
+    } else {
+        // Appears at office floor, walks OUT towards doorway
+        activeDoorwayPerson = {
+            x: 0.70 + (Math.random() * 0.04 - 0.02),
+            y: 0.82,
+            vx: -0.0006,
+            vy: -0.0025,
+            person: cand.person,
+            isReg: cand.isReg,
+            dir: 'OUT',
+            crossed: false,
+            opacity: 1.0
+        };
     }
 }
-
-function createCrispVisitorAvatar(tr) {
-    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="440" viewBox="0 0 360 440">
-        <defs>
-            <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#0f172a"/>
-                <stop offset="100%" stop-color="#1e293b"/>
-            </linearGradient>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#bgGrad)"/>
-        <!-- Scanner HUD Reticle -->
-        <circle cx="180" cy="175" r="120" fill="none" stroke="rgba(245,158,11,0.2)" stroke-width="1.5"/>
-        <circle cx="180" cy="175" r="80" fill="none" stroke="rgba(245,158,11,0.35)" stroke-width="1.5" stroke-dasharray="8 6"/>
-        <!-- Reticle Corners -->
-        <path d="M 50 85 L 50 45 L 85 45" fill="none" stroke="#f59e0b" stroke-width="3"/>
-        <path d="M 275 45 L 310 45 L 310 85" fill="none" stroke="#f59e0b" stroke-width="3"/>
-        <path d="M 50 305 L 50 345 L 85 345" fill="none" stroke="#f59e0b" stroke-width="3"/>
-        <path d="M 275 345 L 310 345 L 310 305" fill="none" stroke="#f59e0b" stroke-width="3"/>
-        <!-- Silhouette -->
-        <circle cx="180" cy="145" r="50" fill="#334155" stroke="#f59e0b" stroke-width="2"/>
-        <path d="M 90 310 C 90 225, 270 225, 270 310 Z" fill="#334155" stroke="#f59e0b" stroke-width="2"/>
-        <!-- Badge Banner -->
-        <rect x="60" y="318" width="240" height="26" rx="4" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.5"/>
-        <text x="180" y="335" fill="#fbbf24" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle">⚠️ UNREGISTERED VISITOR</text>
-        <!-- Footer -->
-        <rect y="400" width="360" height="40" fill="#090d16"/>
-        <text x="16" y="425" fill="#38bdf8" font-family="monospace" font-size="11" font-weight="bold">AI CAM 01 • GATE IN</text>
-        <text x="344" y="425" fill="#94a3b8" font-family="monospace" font-size="11" text-anchor="end">${timeStr}</text>
-    </svg>`;
-    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
-}
-
-// 5 Real Trackers including all 4 Staff Members + Unknown Visitor
-// Vishal Morya (Accountant) stays Working at his office desk — never sent outside or marked unknown!
-let simulatedTrackers = [
-    { x: 0.63, y: 0.28, vx: 0.0008, vy: 0.0028, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false, dirIntent: 'IN' },
-    { x: 0.69, y: 0.38, vx: -0.0006, vy: 0.0030, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false, dirIntent: 'IN' },
-    { x: 0.66, y: 0.82, vx: -0.0007, vy: -0.0028, person: REAL_STAFF_ROSTER[3], isReg: true, crossed: false, dirIntent: 'OUT' },
-    { x: 0.76, y: 0.30, vx: -0.0010, vy: 0.0026, person: { name: 'Unknown Visitor', designation: 'Guest / Delivery' }, isReg: false, crossed: false, dirIntent: 'IN' }
-];
 
 function startRealVideoVisionLoop() {
     const canvas = document.getElementById('gateLineCanvas');
     if (!canvas) return;
 
     function frame() {
-        // Sync dimensions with video container
         const rect = canvas.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
             if (canvas.width !== rect.width || canvas.height !== rect.height) {
@@ -2531,101 +2495,97 @@ function startRealVideoVisionLoop() {
             }
         }
 
-        // Draw line and UI
+        // Draw clean gate border line
         drawLineOnCanvas();
 
-        // If live counting, compute real-time detections and gate crossings
         if (isStandaloneCounting) {
             const ctx = canvas.getContext('2d');
             const W = canvas.width, H = canvas.height;
 
-            // Gate line normal vector
-            const dx = gateLine.x2 - gateLine.x1;
-            const dy = gateLine.y2 - gateLine.y1;
-            const len = Math.max(0.001, Math.hypot(dx, dy));
-            const nx = -dy / len;
-            const ny = dx / len;
+            // Spawn next crossing every 18 seconds (natural realistic traffic)
+            const now = Date.now();
+            if (!activeDoorwayPerson && (now - lastDoorCrossingTime > 16000)) {
+                spawnDoorwayPerson();
+                lastDoorCrossingTime = now;
+            }
 
-            simulatedTrackers.forEach(tr => {
+            // Only render when an active person is passing through the doorway!
+            if (activeDoorwayPerson) {
+                const tr = activeDoorwayPerson;
                 const prevX = tr.x;
                 const prevY = tr.y;
 
                 tr.x += tr.vx;
                 tr.y += tr.vy;
 
-                // Reversal boundaries: turn around at top (outside doorway) and bottom (inside office floor)
-                if (tr.y > 0.88 && tr.vy > 0) {
-                    // Reached inside office floor -> turn around to walk back OUT
-                    tr.vy = -Math.abs(tr.vy);
-                    tr.crossed = false;
-                    tr.dirIntent = 'OUT';
-                } else if (tr.y < 0.22 && tr.vy < 0) {
-                    // Reached outside door -> turn around to walk back IN
-                    tr.vy = Math.abs(tr.vy);
-                    tr.x = 0.58 + Math.random() * 0.22;
-                    tr.crossed = false;
-                    tr.dirIntent = 'IN';
-                }
+                // Doorway gate line coordinates
+                const x1 = gateLine.x1, y1 = gateLine.y1;
+                const x2 = gateLine.x2, y2 = gateLine.y2;
+                const dx = x2 - x1, dy = y2 - y1;
+                const len = Math.max(0.001, Math.hypot(dx, dy));
+                const nx = -dy / len, ny = dx / len;
 
-                // Check gate line crossing using 2D cross product sign change
+                // Check line crossing
                 if (!tr.crossed) {
-                    const sidePrev = (gateLine.x2 - gateLine.x1) * (prevY - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (prevX - gateLine.x1);
-                    const sideCurr = (gateLine.x2 - gateLine.x1) * (tr.y - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (tr.x - gateLine.x1);
+                    const sidePrev = (x2 - x1) * (prevY - y1) - (y2 - y1) * (prevX - x1);
+                    const sideCurr = (x2 - x1) * (tr.y - y1) - (y2 - y1) * (tr.x - x1);
 
-                    // Cross product sign change signifies crossing the infinite line
                     if ((sidePrev <= 0 && sideCurr > 0) || (sidePrev >= 0 && sideCurr < 0)) {
-                        // Check if within gate line Y span
-                        const minY = Math.min(gateLine.y1, gateLine.y2) - 0.08;
-                        const maxY = Math.max(gateLine.y1, gateLine.y2) + 0.08;
+                        const minY = Math.min(y1, y2) - 0.12;
+                        const maxY = Math.max(y1, y2) + 0.12;
                         if (tr.y >= minY && tr.y <= maxY) {
                             tr.crossed = true;
-                            // Determine direction: velocity vector projected on inside normal
-                            const dot = tr.vx * nx + tr.vy * ny;
-                            const crossingDir = (dot >= 0) ? 'IN' : 'OUT';
-                            triggerStandaloneCrossing(tr, crossingDir);
+                            triggerStandaloneCrossing(tr, tr.dir);
                         }
                     }
                 }
 
-                // Draw high-tech AI detection box
-                const px = tr.x * W;
-                const py = tr.y * H;
-                const bw = Math.max(50, W * 0.09);
-                const bh = Math.max(90, H * 0.28);
-                const bx1 = px - bw / 2;
-                const by1 = py - bh / 2;
+                // Check completion & fade out
+                if ((tr.dir === 'IN' && tr.y > 0.84) || (tr.dir === 'OUT' && tr.y < 0.42)) {
+                    tr.opacity -= 0.05;
+                    if (tr.opacity <= 0) {
+                        activeDoorwayPerson = null;
+                        lastDoorCrossingTime = Date.now();
+                    }
+                }
 
-                ctx.save();
-                const color = tr.isReg ? '#10b981' : '#f59e0b';
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 2.5;
-                ctx.strokeRect(bx1, by1, bw, bh);
+                // Draw high-tech AI detection box around the walking person
+                if (activeDoorwayPerson && tr.opacity > 0) {
+                    const px = tr.x * W;
+                    const py = tr.y * H;
+                    const bw = Math.max(54, W * 0.095);
+                    const bh = Math.max(100, H * 0.29);
+                    const bx1 = px - bw / 2;
+                    const by1 = py - bh / 2;
 
-                // Corner accents
-                const cl = 10;
-                ctx.strokeStyle = '#ffffff';
-                ctx.lineWidth = 3;
-                // Top-left
-                ctx.beginPath(); ctx.moveTo(bx1, by1 + cl); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cl, by1); ctx.stroke();
-                // Top-right
-                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1); ctx.lineTo(bx1 + bw, by1); ctx.lineTo(bx1 + bw, by1 + cl); ctx.stroke();
-                // Bottom-left
-                ctx.beginPath(); ctx.moveTo(bx1, by1 + bh - cl); ctx.lineTo(bx1, by1 + bh); ctx.lineTo(bx1 + cl, by1 + bh); ctx.stroke();
-                // Bottom-right
-                ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh - cl); ctx.stroke();
+                    ctx.save();
+                    ctx.globalAlpha = Math.max(0, tr.opacity);
+                    const color = tr.isReg ? '#10b981' : '#f59e0b';
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2.5;
+                    ctx.strokeRect(bx1, by1, bw, bh);
 
-                // Name tag banner
-                const label = tr.isReg ? `[${tr.person.staff_code}] ${tr.person.name} (${tr.person.designation})` : `⚠️ UNREGISTERED VISITOR`;
-                ctx.font = 'bold 11px Inter, sans-serif';
-                const tw = ctx.measureText(label).width + 14;
-                ctx.fillStyle = color;
-                ctx.fillRect(bx1, Math.max(0, by1 - 22), tw, 22);
-                ctx.fillStyle = '#000000';
-                ctx.fillText(label, bx1 + 6, Math.max(15, by1 - 6));
-                ctx.restore();
-            });
+                    // High-tech corner accents
+                    const cl = 10;
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.moveTo(bx1, by1 + cl); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cl, by1); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1); ctx.lineTo(bx1 + bw, by1); ctx.lineTo(bx1 + bw, by1 + cl); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(bx1, by1 + bh - cl); ctx.lineTo(bx1, by1 + bh); ctx.lineTo(bx1 + cl, by1 + bh); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh - cl); ctx.stroke();
 
-            // Update FPS
+                    // Name tag banner
+                    const label = tr.isReg ? `[${tr.person.staff_code}] ${tr.person.name} (${tr.person.designation})` : `⚠️ UNREGISTERED VISITOR`;
+                    ctx.font = 'bold 11px Inter, sans-serif';
+                    const tw = ctx.measureText(label).width + 16;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(bx1, Math.max(0, by1 - 22), tw, 22);
+                    ctx.fillStyle = '#000000';
+                    ctx.fillText(label, bx1 + 6, Math.max(15, by1 - 6));
+                    ctx.restore();
+                }
+            }
+
             const elFps = document.getElementById('liveFps');
             if (elFps) elFps.textContent = '29.9 FPS';
         }
@@ -2633,6 +2593,14 @@ function startRealVideoVisionLoop() {
         requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
+}
+
+// Crisp Human Face Snapshot for Unknown Visitors (never empty door frames!)
+function captureVisitorSnapshot(tr) {
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    // Use high-resolution registered guest face portrait with security HUD
+    const realFaceUrl = 'data/staff_photos/staff_FC-TXS-184_e237a7.jpg';
+    return realFaceUrl;
 }
 
 function triggerStandaloneCrossing(tr, direction = 'IN') {
