@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=13.0?v=5.0">
+  <link rel="stylesheet" href="./css/style.css?v=14.0?v=5.0">
 </head>
 <body>
 
@@ -229,52 +229,72 @@
                 </button>
               </div>
 
-              <!-- Gate Line Editor Panel -->
-              <div id="gateLinePanel" style="background: rgba(6,182,212,0.07); border: 1px solid rgba(6,182,212,0.25); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 310px;">
+              <!-- Gate Geometry & Zone Editor Panel -->
+              <div id="gateLinePanel" style="background: rgba(6,182,212,0.07); border: 1px solid rgba(6,182,212,0.25); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 320px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.78rem; font-weight: 700; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">&#127919; Gate Line Editor</span>
-                  <button id="btnToggleDrawMode" class="btn btn-secondary"
-                          style="padding: 0.3rem 0.7rem; font-size: 0.73rem; font-weight: 700; border-color: rgba(251,191,36,0.5); color: #fbbf24;"
-                          onclick="toggleGateLineDrawMode()">
-                    &#9998; Draw on Video
-                  </button>
+                  <span style="font-size: 0.78rem; font-weight: 700; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">🎯 Gate & Door Geometry</span>
+                  <div style="display: flex; gap: 4px;">
+                    <button id="btnModeBox" class="btn btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700;" onclick="setGateGeometryMode('box')">🚪 Doorway Box</button>
+                    <button id="btnModeLine" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700;" onclick="setGateGeometryMode('line')">📏 Tripwire Line</button>
+                    <button id="btnToggleDrawMode" class="btn btn-secondary"
+                            style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700; border-color: rgba(251,191,36,0.5); color: #fbbf24;"
+                            onclick="toggleGateLineDrawMode()">
+                      ✏️ Draw
+                    </button>
+                  </div>
                 </div>
 
-                <!-- Line length slider -->
-                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8596; Length:</span>
-                  <input type="range" id="lineLengthSlider" min="0.10" max="1.0" step="0.01" value="0.70" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onLineLengthChangeLive(this.value)" onchange="sendLineToServer()" />
-                  <span id="lineLengthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">100%</span>
+                <!-- 1-Click Office Door Presets -->
+                <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; background: rgba(16,185,129,0.12); border: 1px dashed rgba(16,185,129,0.45); padding: 5px 8px; border-radius: 6px;">
+                  <span style="font-size: 0.72rem; color: #34d399; font-weight: 700;">Office Presets:</span>
+                  <button class="btn btn-success" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; font-weight: 700; background: #059669; border: none; color: #fff; cursor: pointer;" onclick="snapToOfficeDoorBox()" title="Snaps Doorway Gate Zone to your exact glass door behind chair">🎯 Snap to My Office Door Box</button>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #38bdf8;" onclick="snapToDoorHorizontalLine()" title="Horizontal crossbar line across door threshold">📏 Horizontal Line</button>
+                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #94a3b8;" onclick="setGatePreset('right_gate')" title="Factory doorway preset for testing video">🎬 Factory Door</button>
                 </div>
 
-                <!-- Line position slider -->
-                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8597; Position:</span>
-                  <input type="range" id="linePosSlider" min="0.05" max="0.95" step="0.01" value="0.55" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onLinePosChangeLive(this.value)" onchange="sendLineToServer()" />
-                  <span id="linePosValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">55%</span>
+                <!-- Controls for Box mode -->
+                <div id="boxControlsContainer" style="display: flex; flex-direction: column; gap: 0.4rem;">
+                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↔ Width:</span>
+                    <input type="range" id="boxWidthSlider" min="0.08" max="0.80" step="0.01" value="0.26" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onBoxWidthChangeLive(this.value)" />
+                    <span id="boxWidthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">26%</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↕ Height:</span>
+                    <input type="range" id="boxHeightSlider" min="0.08" max="0.95" step="0.01" value="0.61" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onBoxHeightChangeLive(this.value)" />
+                    <span id="boxHeightValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">61%</span>
+                  </div>
                 </div>
 
-                <!-- Orientation buttons -->
-                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">&#8592; Direction:</span>
-                  <button id="btnLineHoriz" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('horizontal')">&#8212; Horizontal</button>
-                  <button id="btnLineVert" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('vertical')">| Vertical</button>
+                <!-- Controls for Line mode -->
+                <div id="lineControlsContainer" style="display: none; flex-direction: column; gap: 0.4rem;">
+                  <!-- Line length slider -->
+                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↔ Length:</span>
+                    <input type="range" id="lineLengthSlider" min="0.10" max="1.0" step="0.01" value="0.70" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onLineLengthChangeLive(this.value)" onchange="sendLineToServer()" />
+                    <span id="lineLengthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">100%</span>
+                  </div>
+
+                  <!-- Line position slider -->
+                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↕ Position:</span>
+                    <input type="range" id="linePosSlider" min="0.05" max="0.95" step="0.01" value="0.65" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onLinePosChangeLive(this.value)" onchange="sendLineToServer()" />
+                    <span id="linePosValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">65%</span>
+                  </div>
+
+                  <!-- Orientation buttons -->
+                  <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">Direction:</span>
+                    <button id="btnLineHoriz" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('horizontal')">— Horizontal</button>
+                    <button id="btnLineVert" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('vertical')">| Vertical</button>
+                    <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="flipGateLineDirection()" title="Flip Inside / Outside direction">🔄 Flip Dir</button>
+                  </div>
                 </div>
 
-                
-                <!-- Quick Gate Presets -->
-                <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 75px;">Presets:</span>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #38bdf8;" onclick="setGatePreset('right_gate')">&#128682; Right Gate</button>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="setGatePreset('center_h')">&#8596; Center H</button>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="setGatePreset('center_v')">&#8597; Center V</button>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="flipGateLineDirection()" title="Flip Inside / Outside direction">&#128257; Flip Dir</button>
-                </div>
-
-                <!-- Coordinates -->
-                <div style="font-size: 0.70rem; color: #475569; font-family: monospace; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 5px;">
-                  Line: (<span id="lineCoordX1">0.00</span>, <span id="lineCoordY1">0.55</span>) &#8594;
-                  (<span id="lineCoordX2">1.00</span>, <span id="lineCoordY2">0.55</span>)
+                <!-- Coordinates & Helper text -->
+                <div style="font-size: 0.70rem; color: #94a3b8; font-family: monospace; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center;">
+                  <span id="gateCoordinatesText">Door Zone: (<span id="boxCoordX">0.17</span>, <span id="boxCoordY">0.35</span>) <span id="boxCoordW">26%</span>x<span id="boxCoordH">61%</span></span>
+                  <span style="color: #34d399; font-weight: 700;">● Depth-Aware AI</span>
                 </div>
               </div>
 
@@ -795,7 +815,7 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=13.0"></script>
+  <script src="./js/app.js?v=14.0"></script>
 
   
 

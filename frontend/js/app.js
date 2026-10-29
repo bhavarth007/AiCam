@@ -223,10 +223,24 @@ function switchTab(tabId) {
 }
 
 
-// ─── Gate Line State ─────────────────────────────────────────────────────────
-// Normalized 0.0-1.0 coordinates of the gate line endpoints
-// Default calibrated doorway threshold: (0.605, 0.604) to (0.766, 0.767)
-const DEFAULT_GATE_LINE = { x1: 0.660, y1: 0.470, x2: 0.795, y2: 0.611 };
+// ─── Gate Geometry State (Doorway ROI Box vs Tripwire Line) ───────────────────
+// Default calibrated doorway ROI box (matching exact red door box behind desk chair from Bhavarth's camera):
+const DEFAULT_GATE_BOX = { x: 0.171, y: 0.352, w: 0.255, h: 0.611 };
+// Calibrated horizontal tripwire line across door threshold:
+const DEFAULT_GATE_LINE = { x1: 0.171, y1: 0.650, x2: 0.426, y2: 0.650 };
+
+function loadSavedGateBox() {
+    try {
+        const s = localStorage.getItem('aicam_gate_box');
+        if (s) {
+            const p = JSON.parse(s);
+            if (typeof p.x === 'number' && typeof p.w === 'number') {
+                return p;
+            }
+        }
+    } catch(e) {}
+    return DEFAULT_GATE_BOX;
+}
 
 function loadSavedGateLine() {
     try {
@@ -234,10 +248,6 @@ function loadSavedGateLine() {
         if (s) {
             const p = JSON.parse(s);
             if (typeof p.x1 === 'number' && typeof p.x2 === 'number') {
-                // If it is an old default or invalid, upgrade to calibrated default
-                if (Math.abs(p.x1 - 0.605) < 0.02 || Math.abs(p.x1 - 0.58) < 0.02 || Math.abs(p.x1 - 0.15) < 0.02) {
-                    return DEFAULT_GATE_LINE;
-                }
                 return p;
             }
         }
@@ -245,21 +255,31 @@ function loadSavedGateLine() {
     return DEFAULT_GATE_LINE;
 }
 
-function saveGateLineToStorage() {
+let gateGeometry = localStorage.getItem('aicam_gate_geometry') || 'box'; // 'box' | 'line' (default to 'box' for desk camera)
+let gateBox = loadSavedGateBox() || DEFAULT_GATE_BOX;
+let gateLine = loadSavedGateLine() || DEFAULT_GATE_LINE;
+let lineOrientation = 'horizontal';
+let lineLength = 1.0;
+let linePos    = 0.65;
+
+function saveGateBoxToStorage() {
     try {
-        localStorage.setItem('aicam_gate_line', JSON.stringify(gateLine));
+        localStorage.setItem('aicam_gate_box', JSON.stringify(gateBox));
+        localStorage.setItem('aicam_gate_geometry', gateGeometry);
     } catch(e) {}
 }
 
-let gateLine = loadSavedGateLine() || DEFAULT_GATE_LINE;
-let lineOrientation = 'horizontal';
-let lineLength = 1.0;   // fraction of full span (0.1–1.0)
-let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
+function saveGateLineToStorage() {
+    try {
+        localStorage.setItem('aicam_gate_line', JSON.stringify(gateLine));
+        localStorage.setItem('aicam_gate_geometry', gateGeometry);
+    } catch(e) {}
+}
 
 // Draw mode state
 let drawModeActive = false;
 let isDragging = false;
-let dragTarget = null; // 'line' | 'p1' | 'p2' | 'new'
+let dragTarget = null; // 'box' | 'corner_tl' | 'corner_tr' | 'corner_bl' | 'corner_br' | 'line' | 'p1' | 'p2' | 'new'
 let dragStartX = 0, dragStartY = 0;
 let dragOffX = 0, dragOffY = 0;
 
@@ -323,8 +343,13 @@ function initGateLineCanvas() {
     const canvas  = document.getElementById('gateLineCanvas');
     if (!canvas || !wrapper) return;
 
-    // Always draw line (even when draw mode is off) - using a transparent overlay
-    // that shows endpoint handles but doesn't block pointer when draw mode is off
+    // Initialize geometry controls
+    setGateGeometryMode(gateGeometry);
+    if (gateGeometry === 'box') {
+        updateBoxSliders();
+    } else {
+        updateSlidersFromLine();
+    }
     drawLineOnCanvas();
 
     // Mouse events for dragging
@@ -353,24 +378,31 @@ function canvasPxToNorm(canvas, px, py) {
     };
 }
 
-// Hit test: is (nx,ny) near an endpoint or line body?
+// Hit test: detects handles or body for Box Mode vs Line Mode
 function hitTest(nx, ny) {
-    const { x1, y1, x2, y2 } = gateLine;
-    const r = HANDLE_RADIUS_NORM;
-
-    // Check endpoint 1
-    if (Math.hypot(nx - x1, ny - y1) < r) return 'p1';
-    // Check endpoint 2
-    if (Math.hypot(nx - x2, ny - y2) < r) return 'p2';
-    // Check line body (within r distance)
-    const dx = x2 - x1, dy = y2 - y1;
-    const len2 = dx*dx + dy*dy;
-    if (len2 > 0) {
-        const t = Math.max(0, Math.min(1, ((nx-x1)*dx + (ny-y1)*dy) / len2));
-        const projX = x1 + t*dx, projY = y1 + t*dy;
-        if (Math.hypot(nx - projX, ny - projY) < r * 1.5) return 'line';
+    const r = HANDLE_RADIUS_NORM * 1.5;
+    if (gateGeometry === 'box') {
+        const x1 = gateBox.x, y1 = gateBox.y;
+        const x2 = gateBox.x + gateBox.w, y2 = gateBox.y + gateBox.h;
+        if (Math.hypot(nx - x1, ny - y1) < r) return 'corner_tl';
+        if (Math.hypot(nx - x2, ny - y1) < r) return 'corner_tr';
+        if (Math.hypot(nx - x1, ny - y2) < r) return 'corner_bl';
+        if (Math.hypot(nx - x2, ny - y2) < r) return 'corner_br';
+        if (nx >= x1 && nx <= x2 && ny >= y1 && ny <= y2) return 'box';
+        return null;
+    } else {
+        const { x1, y1, x2, y2 } = gateLine;
+        if (Math.hypot(nx - x1, ny - y1) < r) return 'p1';
+        if (Math.hypot(nx - x2, ny - y2) < r) return 'p2';
+        const dx = x2 - x1, dy = y2 - y1;
+        const len2 = dx*dx + dy*dy;
+        if (len2 > 0) {
+            const t = Math.max(0, Math.min(1, ((nx-x1)*dx + (ny-y1)*dy) / len2));
+            const projX = x1 + t*dx, projY = y1 + t*dy;
+            if (Math.hypot(nx - projX, ny - projY) < r * 1.5) return 'line';
+        }
+        return null;
     }
-    return null;
 }
 
 let sendLineTimeout = null;
@@ -387,26 +419,39 @@ function onCanvasMouseDown(e) {
     if (!canvas) return;
     const { x: nx, y: ny } = canvasPxToNorm(canvas, e.clientX, e.clientY);
 
-    // Hit test allows dragging endpoints or whole line ANY TIME directly on video
     const hit = hitTest(nx, ny);
     if (hit) {
         dragTarget = hit;
-        dragOffX = nx - (hit === 'p2' ? gateLine.x2 : gateLine.x1);
-        dragOffY = ny - (hit === 'p2' ? gateLine.y2 : gateLine.y1);
+        if (gateGeometry === 'box') {
+            dragStartX = nx;
+            dragStartY = ny;
+        } else {
+            dragOffX = nx - (hit === 'p2' ? gateLine.x2 : gateLine.x1);
+            dragOffY = ny - (hit === 'p2' ? gateLine.y2 : gateLine.y1);
+            dragStartX = nx;
+            dragStartY = ny;
+        }
         isDragging = true;
-        dragStartX = nx;
-        dragStartY = ny;
         canvas.style.cursor = 'grabbing';
     } else if (drawModeActive) {
-        // Dedicated draw mode: click anywhere to draw a brand new line
-        dragTarget = 'new';
-        gateLine.x1 = nx;
-        gateLine.y1 = ny;
-        gateLine.x2 = nx;
-        gateLine.y2 = ny;
+        if (gateGeometry === 'box') {
+            dragTarget = 'new_box';
+            gateBox.x = nx;
+            gateBox.y = ny;
+            gateBox.w = 0.08;
+            gateBox.h = 0.08;
+            dragStartX = nx;
+            dragStartY = ny;
+        } else {
+            dragTarget = 'new';
+            gateLine.x1 = nx;
+            gateLine.y1 = ny;
+            gateLine.x2 = nx;
+            gateLine.y2 = ny;
+            dragStartX = nx;
+            dragStartY = ny;
+        }
         isDragging = true;
-        dragStartX = nx;
-        dragStartY = ny;
         canvas.style.cursor = 'crosshair';
     }
 }
@@ -418,9 +463,11 @@ function onCanvasMouseMove(e) {
 
     if (!isDragging) {
         const hit = hitTest(nx, ny);
-        if (hit === 'p1' || hit === 'p2') {
+        if (hit && hit.startsWith('corner_')) {
+            canvas.style.cursor = 'nwse-resize';
+        } else if (hit === 'p1' || hit === 'p2') {
             canvas.style.cursor = 'grab';
-        } else if (hit === 'line') {
+        } else if (hit === 'box' || hit === 'line') {
             canvas.style.cursor = 'move';
         } else {
             canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
@@ -428,31 +475,73 @@ function onCanvasMouseMove(e) {
         return;
     }
 
-    if (dragTarget === 'new') {
-        gateLine.x2 = Math.max(0, Math.min(1, nx));
-        gateLine.y2 = Math.max(0, Math.min(1, ny));
-    } else if (dragTarget === 'p1') {
-        gateLine.x1 = Math.max(0, Math.min(1, nx - dragOffX));
-        gateLine.y1 = Math.max(0, Math.min(1, ny - dragOffY));
-    } else if (dragTarget === 'p2') {
-        gateLine.x2 = Math.max(0, Math.min(1, nx - dragOffX));
-        gateLine.y2 = Math.max(0, Math.min(1, ny - dragOffY));
-    } else if (dragTarget === 'line') {
-        const dx = nx - dragStartX;
-        const dy = ny - dragStartY;
-        gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + dx));
-        gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + dy));
-        gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2 + dx));
-        gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + dy));
-        dragStartX = nx;
-        dragStartY = ny;
+    if (gateGeometry === 'box') {
+        if (dragTarget === 'new_box') {
+            const curX = Math.max(0, Math.min(1, nx));
+            const curY = Math.max(0, Math.min(1, ny));
+            gateBox.x = Math.min(dragStartX, curX);
+            gateBox.y = Math.min(dragStartY, curY);
+            gateBox.w = Math.max(0.08, Math.abs(curX - dragStartX));
+            gateBox.h = Math.max(0.08, Math.abs(curY - dragStartY));
+        } else if (dragTarget === 'corner_br') {
+            gateBox.w = Math.max(0.08, nx - gateBox.x);
+            gateBox.h = Math.max(0.08, ny - gateBox.y);
+        } else if (dragTarget === 'corner_tl') {
+            const oldX2 = gateBox.x + gateBox.w;
+            const oldY2 = gateBox.y + gateBox.h;
+            gateBox.x = Math.min(oldX2 - 0.08, nx);
+            gateBox.y = Math.min(oldY2 - 0.08, ny);
+            gateBox.w = oldX2 - gateBox.x;
+            gateBox.h = oldY2 - gateBox.y;
+        } else if (dragTarget === 'corner_tr') {
+            const oldX1 = gateBox.x;
+            const oldY2 = gateBox.y + gateBox.h;
+            gateBox.w = Math.max(0.08, nx - oldX1);
+            gateBox.y = Math.min(oldY2 - 0.08, ny);
+            gateBox.h = oldY2 - gateBox.y;
+        } else if (dragTarget === 'corner_bl') {
+            const oldX2 = gateBox.x + gateBox.w;
+            const oldY1 = gateBox.y;
+            gateBox.x = Math.min(oldX2 - 0.08, nx);
+            gateBox.w = oldX2 - gateBox.x;
+            gateBox.h = Math.max(0.08, ny - oldY1);
+        } else if (dragTarget === 'box') {
+            const dx = nx - dragStartX;
+            const dy = ny - dragStartY;
+            gateBox.x = Math.max(0, Math.min(1 - gateBox.w, gateBox.x + dx));
+            gateBox.y = Math.max(0, Math.min(1 - gateBox.h, gateBox.y + dy));
+            dragStartX = nx;
+            dragStartY = ny;
+        }
+        updateBoxSliders();
+        saveGateBoxToStorage();
+    } else {
+        if (dragTarget === 'new') {
+            gateLine.x2 = Math.max(0, Math.min(1, nx));
+            gateLine.y2 = Math.max(0, Math.min(1, ny));
+        } else if (dragTarget === 'p1') {
+            gateLine.x1 = Math.max(0, Math.min(1, nx - dragOffX));
+            gateLine.y1 = Math.max(0, Math.min(1, ny - dragOffY));
+        } else if (dragTarget === 'p2') {
+            gateLine.x2 = Math.max(0, Math.min(1, nx - dragOffX));
+            gateLine.y2 = Math.max(0, Math.min(1, ny - dragOffY));
+        } else if (dragTarget === 'line') {
+            const dx = nx - dragStartX;
+            const dy = ny - dragStartY;
+            gateLine.x1 = Math.max(0, Math.min(1, gateLine.x1 + dx));
+            gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1 + dy));
+            gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2 + dx));
+            gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + dy));
+            dragStartX = nx;
+            dragStartY = ny;
+        }
+        updateSlidersFromLine();
+        throttledSendLineToServer();
+        saveGateLineToStorage();
     }
 
-    updateSlidersFromLine();
     showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
-    throttledSendLineToServer();
-    saveGateLineToStorage();
 }
 
 async function onCanvasMouseUp(e) {
@@ -462,15 +551,18 @@ async function onCanvasMouseUp(e) {
     const canvas = document.getElementById('gateLineCanvas');
     if (canvas) canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
 
-    // Persist final coordinates
-    await sendLineToServer();
+    if (gateGeometry === 'box') {
+        saveGateBoxToStorage();
+    } else {
+        await sendLineToServer();
+        saveGateLineToStorage();
+    }
 }
 
 function drawLineOnCanvas() {
     const canvas = document.getElementById('gateLineCanvas');
     if (!canvas) return;
 
-    // Sync canvas pixel size to display size
     const rect = canvas.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
         canvas.width  = rect.width;
@@ -480,13 +572,102 @@ function drawLineOnCanvas() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, W, H);
 
-    const { x1, y1, x2, y2 } = gateLine;
-    const px1 = x1 * W, py1 = y1 * H;
-    const px2 = x2 * W, py2 = y2 * H;
-
     const isActive = document.getElementById('countingStatusText')?.textContent?.includes('LIVE');
     const lineColor = isActive ? '#00ffff' : '#fbbf24';
     const glowColor = isActive ? 'rgba(0,255,255,0.3)' : 'rgba(251,191,36,0.3)';
+
+    // ─── BOX GEOMETRY RENDERING (Doorway Gate Zone) ───
+    if (gateGeometry === 'box') {
+        const bx = gateBox.x * W;
+        const by = gateBox.y * H;
+        const bw = gateBox.w * W;
+        const bh = gateBox.h * H;
+
+        // Semi-transparent interior fill
+        ctx.save();
+        ctx.fillStyle = isActive ? 'rgba(6, 182, 212, 0.10)' : 'rgba(251, 191, 36, 0.08)';
+        ctx.fillRect(bx, by, bw, bh);
+
+        // Dashed glowing border
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([8, 4]);
+        ctx.shadowColor = lineColor;
+        ctx.shadowBlur = 10;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.restore();
+
+        // High-tech corner brackets
+        const cornerL = Math.min(22, bw * 0.25, bh * 0.25);
+        ctx.save();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3.5;
+        ctx.shadowColor = lineColor;
+        ctx.shadowBlur = 8;
+        // TL
+        ctx.beginPath();
+        ctx.moveTo(bx, by + cornerL); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerL, by);
+        // TR
+        ctx.moveTo(bx + bw - cornerL, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerL);
+        // BL
+        ctx.moveTo(bx, by + bh - cornerL); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cornerL, by + bh);
+        // BR
+        ctx.moveTo(bx + bw - cornerL, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cornerL);
+        ctx.stroke();
+        ctx.restore();
+
+        // 4 Circular Corner Handles for easy dragging
+        const corners = [
+            { x: bx, y: by },
+            { x: bx + bw, y: by },
+            { x: bx, y: by + bh },
+            { x: bx + bw, y: by + bh }
+        ];
+        corners.forEach(pt => {
+            ctx.save();
+            ctx.fillStyle = lineColor;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        });
+
+        // Top Header Badge
+        ctx.save();
+        ctx.font = 'bold 11px Inter, sans-serif';
+        const tagText = '🚪 OFFICE DOORWAY GATE ZONE';
+        const tagW = ctx.measureText(tagText).width + 16;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 1;
+        ctx.fillRect(bx + bw/2 - tagW/2, by - 22, tagW, 20);
+        ctx.strokeRect(bx + bw/2 - tagW/2, by - 22, tagW, 20);
+        ctx.fillStyle = lineColor;
+        ctx.textAlign = 'center';
+        ctx.fillText(tagText, bx + bw/2, by - 8);
+        ctx.restore();
+
+        // Depth direction indicators (OUTSIDE through door, INSIDE to desk)
+        ctx.save();
+        ctx.font = 'bold 11px Inter, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText('⬆ OUTSIDE (DOOR)', bx + bw/2, Math.max(16, by + 18));
+        ctx.fillStyle = '#34d399';
+        ctx.fillText('⬇ INSIDE (OFFICE)', bx + bw/2, by + bh - 8);
+        ctx.restore();
+
+        updateBoxSliders();
+        return;
+    }
+
+    // ─── LINE GEOMETRY RENDERING (Tripwire Line) ───
+    const { x1, y1, x2, y2 } = gateLine;
+    const px1 = x1 * W, py1 = y1 * H;
+    const px2 = x2 * W, py2 = y2 * H;
 
     // Glow
     ctx.save();
@@ -510,7 +691,6 @@ function drawLineOnCanvas() {
 
     // Endpoint handles
     [{ x: px1, y: py1 }, { x: px2, y: py2 }].forEach(pt => {
-        // Outer ring
         ctx.save();
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2;
@@ -522,7 +702,6 @@ function drawLineOnCanvas() {
         ctx.fill();
         ctx.stroke();
         ctx.restore();
-        // Inner dot
         ctx.save();
         ctx.fillStyle = '#000';
         ctx.beginPath();
@@ -546,12 +725,11 @@ function drawLineOnCanvas() {
     // Direction labels (show for 2 seconds when interacting, then auto-fade to clean view)
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.max(0.001, Math.hypot(dx, dy));
-    const nx2 = -dy / len, ny2 = dx / len; // perpendicular normal
+    const nx2 = -dy / len, ny2 = dx / len;
 
     const isInteracting = isDragging || (Date.now() < showLabelsUntil);
     if (isInteracting) {
         const OFF = 0.065;
-        // Office floor (inner side) is INSIDE; glass doorway (entrance) is OUTSIDE
         const inX  = ((x1 + x2) / 2 + nx2 * OFF) * W;
         const inY  = ((y1 + y2) / 2 + ny2 * OFF) * H;
         const outX = ((x1 + x2) / 2 - nx2 * OFF) * W;
@@ -569,7 +747,6 @@ function drawLineOnCanvas() {
         ctx.restore();
     }
 
-    // Update coord display
     const fmt = v => v.toFixed(2);
     const setTxt = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
     setTxt('lineCoordX1', fmt(x1)); setTxt('lineCoordY1', fmt(y1));
@@ -685,23 +862,104 @@ window.onLinePosChangeLive = function(val) {
 
 window.onLinePosInput = window.onLinePosChangeLive;
 
+// ─── Gate Geometry & Mode Handlers ───────────────────────────────────────────
+window.setGateGeometryMode = function(mode) {
+    gateGeometry = mode;
+    saveGateBoxToStorage();
+    const btnBox = document.getElementById('btnModeBox');
+    const btnLine = document.getElementById('btnModeLine');
+    const boxControls = document.getElementById('boxControlsContainer');
+    const lineControls = document.getElementById('lineControlsContainer');
+    if (btnBox) {
+        btnBox.className = mode === 'box' ? 'btn btn-primary' : 'btn btn-secondary';
+    }
+    if (btnLine) {
+        btnLine.className = mode === 'line' ? 'btn btn-primary' : 'btn btn-secondary';
+    }
+    if (boxControls) boxControls.style.display = (mode === 'box') ? 'flex' : 'none';
+    if (lineControls) lineControls.style.display = (mode === 'line') ? 'flex' : 'none';
+    drawLineOnCanvas();
+    showNotification(mode === 'box' ? '🚪 Doorway Gate Zone (Box Mode) Active' : '📏 Tripwire Line Mode Active', 'info');
+};
+
+window.snapToOfficeDoorBox = function() {
+    gateGeometry = 'box';
+    gateBox = { x: 0.171, y: 0.352, w: 0.255, h: 0.611 };
+    saveGateBoxToStorage();
+    setGateGeometryMode('box');
+    updateBoxSliders();
+    drawLineOnCanvas();
+    showNotification('🎯 Snapped to your Office Door Box (behind chair)!', 'success');
+};
+
+window.snapToDoorHorizontalLine = function() {
+    gateGeometry = 'line';
+    gateLine = { x1: 0.171, y1: 0.650, x2: 0.426, y2: 0.650 };
+    lineOrientation = 'horizontal';
+    saveGateLineToStorage();
+    saveGateBoxToStorage();
+    setGateGeometryMode('line');
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    showNotification('📏 Snapped to Horizontal Door Threshold Line!', 'success');
+};
+
+window.onBoxWidthChangeLive = function(val) {
+    gateBox.w = Math.max(0.08, Math.min(0.85, parseFloat(val)));
+    const el = document.getElementById('boxWidthValue');
+    if (el) el.textContent = Math.round(gateBox.w * 100) + '%';
+    saveGateBoxToStorage();
+    drawLineOnCanvas();
+};
+
+window.onBoxHeightChangeLive = function(val) {
+    gateBox.h = Math.max(0.08, Math.min(0.95, parseFloat(val)));
+    const el = document.getElementById('boxHeightValue');
+    if (el) el.textContent = Math.round(gateBox.h * 100) + '%';
+    saveGateBoxToStorage();
+    drawLineOnCanvas();
+};
+
+function updateBoxSliders() {
+    const wSlider = document.getElementById('boxWidthSlider');
+    const hSlider = document.getElementById('boxHeightSlider');
+    const wVal = document.getElementById('boxWidthValue');
+    const hVal = document.getElementById('boxHeightValue');
+    if (wSlider) wSlider.value = gateBox.w.toFixed(2);
+    if (hSlider) hSlider.value = gateBox.h.toFixed(2);
+    if (wVal) wVal.textContent = Math.round(gateBox.w * 100) + '%';
+    if (hVal) hVal.textContent = Math.round(gateBox.h * 100) + '%';
+    const cX = document.getElementById('boxCoordX');
+    const cY = document.getElementById('boxCoordY');
+    const cW = document.getElementById('boxCoordW');
+    const cH = document.getElementById('boxCoordH');
+    if (cX) cX.textContent = gateBox.x.toFixed(2);
+    if (cY) cY.textContent = gateBox.y.toFixed(2);
+    if (cW) cW.textContent = Math.round(gateBox.w * 100) + '%';
+    if (cH) cH.textContent = Math.round(gateBox.h * 100) + '%';
+}
+
 window.setGatePreset = async function(preset) {
     if (preset === 'right_gate') {
-        // Office Glass Doorway Threshold (exact coordinates from testing video)
-        // Point 1: top of doorway; Point 2: bottom of doorway
+        gateGeometry = 'box';
+        gateBox = { x: 0.640, y: 0.440, w: 0.175, h: 0.200 };
         gateLine = { x1: 0.660, y1: 0.470, x2: 0.795, y2: 0.611 };
         lineOrientation = 'diagonal';
     } else if (preset === 'center_h') {
+        gateGeometry = 'line';
         gateLine = { x1: 0.15, y1: 0.55, x2: 0.85, y2: 0.55 };
         lineOrientation = 'horizontal';
     } else if (preset === 'center_v') {
+        gateGeometry = 'line';
         gateLine = { x1: 0.58, y1: 0.20, x2: 0.58, y2: 0.85 };
         lineOrientation = 'vertical';
     }
     showLabelsUntil = Date.now() + 3000;
-    updateSlidersFromLine();
+    saveGateBoxToStorage();
+    saveGateLineToStorage();
+    setGateGeometryMode(gateGeometry);
     drawLineOnCanvas();
-    await sendLineToServer();
+    if (gateGeometry === 'line') await sendLineToServer();
     showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
 };
 
@@ -2518,6 +2776,91 @@ function detectGateLineMotion() {
             return;
         }
 
+        // ═════════════════════════════════════════════════════════════════════
+        // MODE A: DOORWAY GATE ZONE (BOX / RECTANGLE) - RECOMMENDED FOR DESK CAM
+        // ═════════════════════════════════════════════════════════════════════
+        if (gateGeometry === 'box') {
+            const bx1 = Math.floor(gateBox.x * 160);
+            const bx2 = Math.ceil((gateBox.x + gateBox.w) * 160);
+            const by1 = Math.floor(gateBox.y * 90);
+            const by2 = Math.ceil((gateBox.y + gateBox.h) * 90);
+
+            // Foreground desk zone (where Bhavarth sits in front of camera)
+            const deskX1 = 0;
+            const deskX2 = Math.min(159, Math.floor(Math.max(0.40, gateBox.x + gateBox.w) * 160));
+            const deskY1 = Math.floor(0.55 * 90);
+            const deskY2 = 89;
+
+            let doorMotion = 0, doorSumX = 0, doorSumY = 0;
+            let deskMotion = 0;
+
+            for (let y = 0; y < 90; y += 2) {
+                for (let x = 0; x < 160; x += 2) {
+                    const idx = (y * 160 + x) * 4;
+                    const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
+                                 Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
+                                 Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
+                    if (diff > 65) {
+                        if (x >= bx1 && x <= bx2 && y >= by1 && y <= by2) {
+                            doorMotion++;
+                            doorSumX += x;
+                            doorSumY += y;
+                        }
+                        if (x >= deskX1 && x <= deskX2 && y >= deskY1 && y <= deskY2) {
+                            deskMotion++;
+                        }
+                    }
+                }
+            }
+
+            prevFrameData = new Uint8ClampedArray(currData);
+
+            if (now - lastMotionCrossingTime < 2500) return;
+
+            if (doorMotion > 18) {
+                const avgNormY = (doorSumY / doorMotion) / 90;
+                const avgNormX = (doorSumX / doorMotion) / 160;
+                const relY = (avgNormY - gateBox.y) / Math.max(0.001, gateBox.h);
+
+                if (!personCrossingState) {
+                    // Check where motion originated
+                    if (relY > 0.45 || deskMotion > 12) {
+                        personCrossingState = { origin: 'INSIDE', startTime: now, x: avgNormX, y: avgNormY };
+                    } else {
+                        personCrossingState = { origin: 'OUTSIDE', startTime: now, x: avgNormX, y: avgNormY };
+                    }
+                } else {
+                    // Trajectory update
+                    if (personCrossingState.origin === 'INSIDE' && (relY < 0.40 || doorMotion > 32)) {
+                        lastMotionCrossingTime = now;
+                        triggerGateMotionCrossing('OUT', avgNormX, avgNormY);
+                        personCrossingState = null;
+                    } else if (personCrossingState.origin === 'OUTSIDE' && (relY > 0.50 || deskMotion > 15)) {
+                        lastMotionCrossingTime = now;
+                        triggerGateMotionCrossing('IN', avgNormX, avgNormY);
+                        personCrossingState = null;
+                    } else if (now - personCrossingState.startTime > 7000) {
+                        personCrossingState = null;
+                    }
+                }
+            } else {
+                if (personCrossingState && (now - personCrossingState.startTime > 1200)) {
+                    if (personCrossingState.origin === 'INSIDE' && deskMotion < 8) {
+                        lastMotionCrossingTime = now;
+                        triggerGateMotionCrossing('OUT', gateBox.x + gateBox.w / 2, gateBox.y + gateBox.h / 2);
+                    } else if (personCrossingState.origin === 'OUTSIDE' && deskMotion > 8) {
+                        lastMotionCrossingTime = now;
+                        triggerGateMotionCrossing('IN', gateBox.x + gateBox.w / 2, gateBox.y + gateBox.h / 2);
+                    }
+                    personCrossingState = null;
+                }
+            }
+            return;
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // MODE B: TRIPWIRE LINE (HORIZONTAL OR DIAGONAL)
+        // ═════════════════════════════════════════════════════════════════════
         const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
         const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
         const dx = x2 - x1, dy = y2 - y1;
@@ -2552,7 +2895,7 @@ function detectGateLineMotion() {
         prevFrameData = new Uint8ClampedArray(currData);
 
         // If person motion is active in the doorway corridor
-        if (motionCount > 40) {
+        if (motionCount > 30) {
             const avgX = (sumX / motionCount) / 160;
             const avgY = (sumY / motionCount) / 90;
             const side = getSideOfGateLine(avgX, avgY);
@@ -2568,24 +2911,19 @@ function detectGateLineMotion() {
                     personCrossingState = { origin: 'INSIDE', startTime: now, x: avgX, y: avgY };
                 }
             } else {
-                // If they crossed over to the other side:
                 if (personCrossingState.origin === 'OUTSIDE' && side > 0.02) {
-                    // OUTSIDE -> INSIDE = GATE IN!
                     lastMotionCrossingTime = now;
                     triggerGateMotionCrossing('IN', avgX, avgY);
                     personCrossingState = null;
                 } else if (personCrossingState.origin === 'INSIDE' && side < -0.02) {
-                    // INSIDE -> OUTSIDE = GATE OUT!
                     lastMotionCrossingTime = now;
                     triggerGateMotionCrossing('OUT', avgX, avgY);
                     personCrossingState = null;
                 } else if (now - personCrossingState.startTime > 6000) {
-                    // Timeout if person walked away without crossing
                     personCrossingState = null;
                 }
             }
         } else {
-            // Decay state if motion ceases
             if (personCrossingState && now - personCrossingState.startTime > 2000) {
                 personCrossingState = null;
             }
