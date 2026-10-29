@@ -1,3 +1,31 @@
+
+let showLabelsUntil = Date.now() + 2500; // show labels for 2.5s initially, then auto-fade
+let standbyOverlayTimer = null;
+
+function showStandbyOverlayTemporary() {
+    const el = document.getElementById('cameraStandbyOverlay');
+    if (!el) return;
+    el.style.display = 'block';
+    requestAnimationFrame(() => {
+        el.style.opacity = '1';
+    });
+    clearTimeout(standbyOverlayTimer);
+    standbyOverlayTimer = setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => {
+            if (el.style.opacity === '0') el.style.display = 'none';
+        }, 400);
+    }, 2000); // Auto-hide after 2 seconds!
+}
+
+function hideStandbyOverlayImmediate() {
+    const el = document.getElementById('cameraStandbyOverlay');
+    if (!el) return;
+    clearTimeout(standbyOverlayTimer);
+    el.style.opacity = '0';
+    el.style.display = 'none';
+}
+
 // Environment & Global State
 const isGitHubPages = window.location.hostname.includes('github.io') || window.location.protocol === 'file:' || window.location.search.includes('demo=true');
 let cloudBackendUrl = localStorage.getItem('aicam_cloud_backend') || '';
@@ -155,7 +183,7 @@ function switchTab(tabId) {
 
 // ─── Gate Line State ─────────────────────────────────────────────────────────
 // Normalized 0.0-1.0 coordinates of the gate line endpoints
-let gateLine = { x1: 0.0, y1: 0.55, x2: 1.0, y2: 0.55 };
+let gateLine = { x1: 0.48, y1: 0.58, x2: 0.66, y2: 0.77 };
 let lineOrientation = 'horizontal';
 let lineLength = 1.0;   // fraction of full span (0.1–1.0)
 let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
@@ -353,6 +381,7 @@ function onCanvasMouseMove(e) {
     }
 
     updateSlidersFromLine();
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
 }
@@ -445,25 +474,31 @@ function drawLineOnCanvas() {
     ctx.stroke();
     ctx.restore();
 
-    // Direction labels
+    // Direction labels (show for 2 seconds when interacting, then auto-fade to clean view)
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.max(0.001, Math.hypot(dx, dy));
-    const nx2 = -dy/len, ny2 = dx/len; // perpendicular
+    const nx2 = -dy / len, ny2 = dx / len; // perpendicular normal
 
-    const OFF = 0.06;
-    const outX = ((x1+x2)/2 + nx2 * OFF) * W;
-    const outY = ((y1+y2)/2 + ny2 * OFF) * H;
-    const inX  = ((x1+x2)/2 - nx2 * OFF) * W;
-    const inY  = ((y1+y2)/2 - ny2 * OFF) * H;
+    const isInteracting = isDragging || (Date.now() < showLabelsUntil);
+    if (isInteracting) {
+        const OFF = 0.065;
+        // Office floor (inner side) is INSIDE; glass doorway (entrance) is OUTSIDE
+        const inX  = ((x1 + x2) / 2 + nx2 * OFF) * W;
+        const inY  = ((y1 + y2) / 2 + ny2 * OFF) * H;
+        const outX = ((x1 + x2) / 2 - nx2 * OFF) * W;
+        const outY = ((y1 + y2) / 2 - ny2 * OFF) * H;
 
-    ctx.font = 'bold 12px Inter, monospace';
-    ctx.textAlign = 'center';
-    ctx.shadowBlur = 6;
-    ctx.shadowColor = '#000';
-    ctx.fillStyle = '#00e5ff';
-    ctx.fillText('OUTSIDE', Math.max(40, Math.min(W-40, outX)), Math.max(16, Math.min(H-8, outY)));
-    ctx.fillStyle = '#34d399';
-    ctx.fillText('INSIDE', Math.max(30, Math.min(W-30, inX)), Math.max(16, Math.min(H-8, inY)));
+        ctx.save();
+        ctx.font = 'bold 12px Inter, monospace';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = '#000';
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillText('OUTSIDE (DOOR)', Math.max(50, Math.min(W - 50, outX)), Math.max(18, Math.min(H - 10, outY)));
+        ctx.fillStyle = '#34d399';
+        ctx.fillText('INSIDE (OFFICE)', Math.max(50, Math.min(W - 50, inX)), Math.max(18, Math.min(H - 10, inY)));
+        ctx.restore();
+    }
 
     // Update coord display
     const fmt = v => v.toFixed(2);
@@ -517,6 +552,7 @@ window.toggleGateLineDrawMode = function() {
         showNotification('Draw mode OFF. Line saved.', 'success');
         sendLineToServer();
     }
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
 };
 
@@ -542,6 +578,7 @@ window.onLineLengthChangeLive = function(val) {
     gateLine.x2 = Math.max(0, Math.min(1, cx + half * cosA));
     gateLine.y2 = Math.max(0, Math.min(1, cy + half * sinA));
 
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
 };
@@ -570,6 +607,7 @@ window.onLinePosChangeLive = function(val) {
         gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2 + shiftX));
     }
 
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
 };
@@ -578,8 +616,23 @@ window.onLinePosInput = window.onLinePosChangeLive;
 
 window.setGatePreset = async function(preset) {
     if (preset === 'right_gate') {
-        // Vertical line at right gate area (gate entrance in testing video)
-        gateLine = { x1: 0.68, y1: 0.22, x2: 0.68, y2: 0.88 };
+        // Office Glass Doorway Threshold (exact coordinates from testing video)
+        // Point 1: top of doorway; Point 2: bottom of doorway
+        gateLine = { x1: 0.48, y1: 0.58, x2: 0.66, y2: 0.77 };
+        lineOrientation = 'diagonal';
+    } else if (preset === 'center_h') {
+        gateLine = { x1: 0.15, y1: 0.55, x2: 0.85, y2: 0.55 };
+        lineOrientation = 'horizontal';
+    } else if (preset === 'center_v') {
+        gateLine = { x1: 0.58, y1: 0.20, x2: 0.58, y2: 0.85 };
+        lineOrientation = 'vertical';
+    }
+    showLabelsUntil = Date.now() + 3000;
+    updateSlidersFromLine();
+    drawLineOnCanvas();
+    await sendLineToServer();
+    showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
+};
         lineOrientation = 'vertical';
     } else if (preset === 'center_h') {
         gateLine = { x1: 0.10, y1: 0.55, x2: 0.90, y2: 0.55 };
@@ -589,6 +642,7 @@ window.setGatePreset = async function(preset) {
         lineOrientation = 'vertical';
     }
     updateSlidersFromLine();
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     await sendLineToServer();
     showNotification('🚪 Gate preset applied: ' + preset.replace('_', ' ').toUpperCase(), 'success');
@@ -598,6 +652,7 @@ window.flipGateLineDirection = async function() {
     const tmpX = gateLine.x1, tmpY = gateLine.y1;
     gateLine.x1 = gateLine.x2; gateLine.y1 = gateLine.y2;
     gateLine.x2 = tmpX; gateLine.y2 = tmpY;
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     await sendLineToServer();
     showNotification('🔄 Direction reversed (Inside ⇄ Outside)', 'info');
@@ -652,6 +707,7 @@ window.setLineOrientation = async function(orient) {
     gateLine.x2 = Math.max(0, Math.min(1, gateLine.x2));
     gateLine.y1 = Math.max(0, Math.min(1, gateLine.y1));
     gateLine.y2 = Math.max(0, Math.min(1, gateLine.y2));
+    showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     await sendLineToServer();
 };
@@ -1981,7 +2037,7 @@ function initStandaloneRealVideoMode() {
         standaloneVideoEl.load();
     }
 
-    if (standbyOverlay) standbyOverlay.style.display = 'flex';
+    showStandbyOverlayTemporary();
 
     // Render 4 real staff members
     renderStandaloneStaff();
@@ -2013,8 +2069,7 @@ function standaloneStartCounting() {
     if (standaloneVideoEl) {
         standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
     }
-    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
-    if (standbyOverlay) standbyOverlay.style.display = 'none';
+    hideStandbyOverlayImmediate();
 
     showNotification('▶️ Live Video & AI Gate Tracking Started!', 'success');
 }
@@ -2027,8 +2082,7 @@ function standaloneStopCounting() {
     if (standaloneVideoEl) {
         standaloneVideoEl.pause();
     }
-    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
-    if (standbyOverlay) standbyOverlay.style.display = 'flex';
+    showStandbyOverlayTemporary();
 
     showNotification('⏸️ Live Video & AI Tracking Paused.', 'warning');
 }

@@ -219,13 +219,7 @@ class VideoStreamManager:
                 if self.tracking_engine:
                     standby_frame = self.tracking_engine.draw_hud_overlay(standby_frame, [], is_counting=False)
 
-                # Overlay subtle standby status bar at top
-                cv2.rectangle(standby_frame, (0, 0), (w, 36), (15, 23, 42), -1)
-                cv2.line(standby_frame, (0, 36), (w, 36), (244, 63, 94), 2)
-                cv2.putText(standby_frame, "STANDBY / PAUSED -- CLICK [START CAMERA & COUNTING] TO RUN",
-                            (16, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 2, cv2.LINE_AA)
-                cv2.putText(standby_frame, "Gate line is live -- drag handles or sliders anytime",
-                            (max(16, w - 460), 24), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (52, 211, 153), 1, cv2.LINE_AA)
+                # Frame remains 100% clean and unobstructed
 
                 with self.lock:
                     self.current_hud_frame = standby_frame
