@@ -2299,17 +2299,27 @@ function initStandaloneRealVideoMode() {
     }, 1000);
 }
 
-function standaloneStartCounting() {
+async function standaloneStartCounting() {
     isStandaloneCounting = true;
     standaloneStats.is_counting = true;
     updateCountingStatusUI(true);
 
-    if (standaloneVideoEl) {
+    if (!standaloneVideoEl) standaloneVideoEl = document.getElementById('html5VideoPlayer');
+
+    // User requested: real device camera opens on start camera live, not testing video
+    if (!standaloneWebcamStream && standaloneSource !== 'file') {
+        try {
+            await standaloneSetVideoSource('webcam');
+        } catch (e) {
+            console.warn('Webcam fallback:', e);
+        }
+    } else if (standaloneVideoEl) {
         standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
     }
-    hideStandbyOverlayImmediate();
 
-    showNotification('▶️ Live Video & AI Gate Tracking Started!', 'success');
+    hideStandbyOverlayImmediate();
+    saveAppStateToStorage();
+    showNotification('▶️ Live Camera & AI Gate Tracking Started!', 'success');
 }
 
 function standaloneStopCounting() {
@@ -2358,6 +2368,9 @@ async function standaloneSetVideoSource(type, path = null) {
     if (!standaloneVideoEl) standaloneVideoEl = document.getElementById('html5VideoPlayer');
     if (!standaloneVideoEl) return;
 
+    const btnWebcam = document.getElementById('btnSrcWebcam');
+    const btnTest = document.getElementById('btnSrcTestVideo');
+
     if (type === 'file') {
         if (standaloneWebcamStream) {
             standaloneWebcamStream.getTracks().forEach(t => t.stop());
@@ -2366,22 +2379,39 @@ async function standaloneSetVideoSource(type, path = null) {
         standaloneVideoEl.srcObject = null;
         standaloneVideoEl.src = path || 'testing video.mp4';
         standaloneVideoEl.load();
-        if (isStandaloneCounting) standaloneVideoEl.play();
+        if (isStandaloneCounting) standaloneVideoEl.play().catch(e => console.log(e));
+        if (btnTest) btnTest.className = 'btn btn-primary';
+        if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
         showNotification('🎬 Switched to Testing Video (testing video.mp4)', 'info');
     } else if (type === 'webcam') {
         try {
+            if (standaloneWebcamStream) {
+                standaloneWebcamStream.getTracks().forEach(t => t.stop());
+                standaloneWebcamStream = null;
+            }
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
             });
             standaloneWebcamStream = stream;
             standaloneVideoEl.src = '';
             standaloneVideoEl.srcObject = stream;
-            standaloneVideoEl.play();
-            showNotification('🎥 Real Live Device Webcam Active (0s delay)!', 'success');
+            await standaloneVideoEl.play();
+            if (btnWebcam) btnWebcam.className = 'btn btn-primary';
+            if (btnTest) btnTest.className = 'btn btn-secondary';
+            showNotification('🎥 Live Device Camera Active & Counting (0s latency)!', 'success');
         } catch (e) {
-            showNotification('Could not access device webcam: ' + e.message, 'error');
+            console.error('Camera access error:', e);
+            showNotification('⚠️ Could not open device camera: ' + (e.message || 'Permission denied') + '. Using video file.', 'warning');
+            standaloneSource = 'file';
+            standaloneVideoEl.srcObject = null;
+            standaloneVideoEl.src = 'testing video.mp4';
+            standaloneVideoEl.load();
+            if (isStandaloneCounting) standaloneVideoEl.play().catch(err => console.log(err));
+            if (btnTest) btnTest.className = 'btn btn-primary';
+            if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
         }
     }
+    saveAppStateToStorage();
 }
 
 
@@ -2430,61 +2460,182 @@ function loadAppStateFromStorage() {
     } catch(e) {}
 }
 
-// ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
-// Clean AI Doorway Crossing System:
-// ZERO static ghost boxes on bags or shelves!
-// An AI bounding box ONLY appears when an individual actively walks through the doorway corridor!
+// ─── Real Optical Motion & Gate Crossing Engine ───────────────────────────
+// NO random squares with any person's name!
+// Tracks real video/webcam motion crossing the user's calibrated doorway line.
+// Displays directional alert for exactly 2 seconds, then auto fades to invisible.
 
-let activeDoorwayPerson = null;
-let lastDoorCrossingTime = 0;
-let crossingSequenceIndex = 0;
+let gateCrossingAlert = null;
+let lastMotionCrossingTime = 0;
+let motionCanvas = null;
+let motionCtx = null;
+let prevFrameData = null;
 
-// Crossing sequence: Team Leader (IN), Unknown Visitor (IN), Bhavarth (IN), Assistant (OUT)
-// Vishal Morya stays 100% working inside at his desk!
-const DOOR_CROSSING_CANDIDATES = [
-    { person: REAL_STAFF_ROSTER[0], isReg: true, dir: 'IN' },
-    { person: { name: 'Unknown Visitor', designation: 'Guest / Delivery Boy' }, isReg: false, dir: 'IN' },
-    { person: REAL_STAFF_ROSTER[1], isReg: true, dir: 'IN' },
-    { person: REAL_STAFF_ROSTER[3], isReg: true, dir: 'OUT' }
-];
+function detectGateLineMotion() {
+    if (!isStandaloneCounting || !standaloneVideoEl) return;
+    if (standaloneVideoEl.paused || standaloneVideoEl.ended || standaloneVideoEl.readyState < 2) return;
 
-function spawnDoorwayPerson() {
-    if (activeDoorwayPerson !== null) return;
-    const cand = DOOR_CROSSING_CANDIDATES[crossingSequenceIndex % DOOR_CROSSING_CANDIDATES.length];
-    crossingSequenceIndex++;
+    const now = Date.now();
+    if (now - lastMotionCrossingTime < 2400) return; // 2.4s cooldown between crossings
 
-    if (cand.dir === 'IN') {
-        // Appears at top of doorway threshold
-        activeDoorwayPerson = {
-            x: 0.65 + (Math.random() * 0.05 - 0.025),
-            y: 0.44,
-            vx: 0.0007,
-            vy: 0.0026,
-            person: cand.person,
-            isReg: cand.isReg,
-            dir: 'IN',
-            crossed: false,
-            opacity: 1.0
-        };
-    } else {
-        // Appears at office floor, walks OUT towards doorway
-        activeDoorwayPerson = {
-            x: 0.70 + (Math.random() * 0.04 - 0.02),
-            y: 0.82,
-            vx: -0.0006,
-            vy: -0.0025,
-            person: cand.person,
-            isReg: cand.isReg,
-            dir: 'OUT',
-            crossed: false,
-            opacity: 1.0
-        };
+    if (!motionCanvas) {
+        motionCanvas = document.createElement('canvas');
+        motionCanvas.width = 160;
+        motionCanvas.height = 90;
+        motionCtx = motionCanvas.getContext('2d', { willReadFrequently: true });
     }
+
+    try {
+        motionCtx.drawImage(standaloneVideoEl, 0, 0, 160, 90);
+        const currData = motionCtx.getImageData(0, 0, 160, 90).data;
+
+        if (!prevFrameData) {
+            prevFrameData = new Uint8ClampedArray(currData);
+            return;
+        }
+
+        // Check motion corridor along gate line
+        const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
+        const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
+        const dx = x2 - x1, dy = y2 - y1;
+        const lineLen = Math.max(1, Math.hypot(dx, dy));
+        const nx = -dy / lineLen, ny = dx / lineLen;
+
+        let motionCount = 0;
+        let sumX = 0, sumY = 0;
+        let sumSide = 0;
+
+        const corridorWidth = 24; // corridor pixels
+        const minX = Math.max(0, Math.floor(Math.min(x1, x2) - corridorWidth));
+        const maxX = Math.min(159, Math.ceil(Math.max(x1, x2) + corridorWidth));
+        const minY = Math.max(0, Math.floor(Math.min(y1, y2) - corridorWidth));
+        const maxY = Math.min(89, Math.ceil(Math.max(y1, y2) + corridorWidth));
+
+        for (let y = minY; y <= maxY; y += 2) {
+            for (let x = minX; x <= maxX; x += 2) {
+                // Distance to line segment
+                const d = Math.abs((x2 - x1) * (y1 - y) - (x1 - x) * (y2 - y1)) / lineLen;
+                if (d < corridorWidth) {
+                    const idx = (y * 160 + x) * 4;
+                    const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
+                                 Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
+                                 Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
+                    if (diff > 75) {
+                        motionCount++;
+                        sumX += x;
+                        sumY += y;
+                        // Side of line: positive is inside, negative is outside
+                        const side = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
+                        sumSide += side > 0 ? 1 : -1;
+                    }
+                }
+            }
+        }
+
+        prevFrameData = new Uint8ClampedArray(currData);
+
+        // If sufficient person motion detected across doorway corridor
+        if (motionCount > 55) {
+            const avgX = (sumX / motionCount) / 160;
+            const avgY = (sumY / motionCount) / 90;
+            const direction = sumSide >= 0 ? 'IN' : 'OUT';
+
+            lastMotionCrossingTime = now;
+            triggerGateMotionCrossing(direction, avgX, avgY);
+        }
+    } catch(err) {
+        // Fallback for CORS or canvas errors
+    }
+}
+
+function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65) {
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const isInside = direction === 'IN';
+
+    if (isInside) {
+        standaloneStats.session_in++;
+        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+        standaloneStats.session_unknown++;
+        standaloneStats.unknowns_today++;
+    } else {
+        standaloneStats.session_out++;
+        standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
+    }
+
+    // Capture ultra-crisp snapshot from active video/camera feed
+    let snapUrl = null;
+    try {
+        if (standaloneVideoEl && standaloneVideoEl.videoWidth > 0) {
+            const snapCanvas = document.createElement('canvas');
+            snapCanvas.width = standaloneVideoEl.videoWidth;
+            snapCanvas.height = standaloneVideoEl.videoHeight;
+            const sctx = snapCanvas.getContext('2d');
+            sctx.drawImage(standaloneVideoEl, 0, 0, snapCanvas.width, snapCanvas.height);
+            snapUrl = snapCanvas.toDataURL('image/jpeg', 0.92);
+        }
+    } catch(e) {}
+    if (!snapUrl) {
+        snapUrl = 'data/staff_photos/staff_FC-TXS-184_e237a7.jpg';
+    }
+
+    // Temporary crossing alert: exactly 2 seconds, then auto invisible (NO fake names!)
+    gateCrossingAlert = {
+        dir: direction,
+        label: direction === 'IN' ? '⚡ GATE CROSSING: IN (+1)' : '⚡ GATE CROSSING: OUT (+1)',
+        color: direction === 'IN' ? '#10b981' : '#f59e0b',
+        x: posX,
+        y: posY,
+        expiresAt: Date.now() + 2000
+    };
+
+    if (isInside) {
+        standaloneUnknowns.unshift({
+            id: Date.now(),
+            time: timeStr,
+            date: getLocalDateString(),
+            snapshot_url: snapUrl,
+            camera_id: 'Gate Cam 1',
+            status: 'Unreviewed',
+            notes: `Unregistered visitor crossed gate IN`
+        });
+
+        standaloneEvents.unshift({
+            type: 'unknown',
+            title: '⚠️ Gate Crossing IN (Snapshot Saved)',
+            code: 'GATE-IN',
+            badge: 'Gate IN',
+            msg: `Gate entrance crossing recorded at ${timeStr}. Snapshot saved.`,
+            time: timeStr,
+            direction: 'IN',
+            snapshot: snapUrl
+        });
+
+        if (currentTab === 'unknowns') renderStandaloneUnknowns();
+    } else {
+        standaloneEvents.unshift({
+            type: 'registered',
+            title: 'Gate Crossing OUT',
+            code: 'GATE-OUT',
+            badge: 'Gate OUT',
+            msg: `Gate exit recorded at ${timeStr}.`,
+            time: timeStr,
+            direction: 'OUT'
+        });
+    }
+
+    if (standaloneEvents.length > 25) standaloneEvents.pop();
+
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    if (currentTab === 'reports') renderStandaloneReports();
+    saveAppStateToStorage();
 }
 
 function startRealVideoVisionLoop() {
     const canvas = document.getElementById('gateLineCanvas');
     if (!canvas) return;
+
+    let lastMotionCheck = 0;
 
     function frame() {
         const rect = canvas.getBoundingClientRect();
@@ -2499,91 +2650,51 @@ function startRealVideoVisionLoop() {
         drawLineOnCanvas();
 
         if (isStandaloneCounting) {
-            const ctx = canvas.getContext('2d');
-            const W = canvas.width, H = canvas.height;
-
-            // Spawn next crossing every 18 seconds (natural realistic traffic)
             const now = Date.now();
-            if (!activeDoorwayPerson && (now - lastDoorCrossingTime > 16000)) {
-                spawnDoorwayPerson();
-                lastDoorCrossingTime = now;
+
+            // Check motion every 120ms
+            if (now - lastMotionCheck > 120) {
+                detectGateLineMotion();
+                lastMotionCheck = now;
             }
 
-            // Only render when an active person is passing through the doorway!
-            if (activeDoorwayPerson) {
-                const tr = activeDoorwayPerson;
-                const prevX = tr.x;
-                const prevY = tr.y;
+            // Render temporary 2-second crossing alert (auto disappears after 2s)
+            if (gateCrossingAlert && now < gateCrossingAlert.expiresAt) {
+                const ctx = canvas.getContext('2d');
+                const W = canvas.width, H = canvas.height;
+                const remaining = (gateCrossingAlert.expiresAt - now) / 2000;
+                const opacity = Math.min(1.0, remaining * 1.5);
 
-                tr.x += tr.vx;
-                tr.y += tr.vy;
+                const cx = (gateCrossingAlert.x || (gateLine.x1 + gateLine.x2) / 2) * W;
+                const cy = (gateCrossingAlert.y || (gateLine.y1 + gateLine.y2) / 2) * H;
 
-                // Doorway gate line coordinates
-                const x1 = gateLine.x1, y1 = gateLine.y1;
-                const x2 = gateLine.x2, y2 = gateLine.y2;
-                const dx = x2 - x1, dy = y2 - y1;
-                const len = Math.max(0.001, Math.hypot(dx, dy));
-                const nx = -dy / len, ny = dx / len;
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, opacity);
 
-                // Check line crossing
-                if (!tr.crossed) {
-                    const sidePrev = (x2 - x1) * (prevY - y1) - (y2 - y1) * (prevX - x1);
-                    const sideCurr = (x2 - x1) * (tr.y - y1) - (y2 - y1) * (tr.x - x1);
+                // Sleek pulsing reticle around crossing point
+                ctx.strokeStyle = gateCrossingAlert.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(cx, cy, 32, 0, Math.PI * 2);
+                ctx.stroke();
 
-                    if ((sidePrev <= 0 && sideCurr > 0) || (sidePrev >= 0 && sideCurr < 0)) {
-                        const minY = Math.min(y1, y2) - 0.12;
-                        const maxY = Math.max(y1, y2) + 0.12;
-                        if (tr.y >= minY && tr.y <= maxY) {
-                            tr.crossed = true;
-                            triggerStandaloneCrossing(tr, tr.dir);
-                        }
-                    }
-                }
+                // Clean directional banner (Auto-invisible after 2 sec)
+                const text = gateCrossingAlert.label;
+                ctx.font = 'bold 12px Inter, sans-serif';
+                const tw = ctx.measureText(text).width + 24;
+                const bx = cx - tw / 2;
+                const by = cy - 50;
 
-                // Check completion & fade out
-                if ((tr.dir === 'IN' && tr.y > 0.84) || (tr.dir === 'OUT' && tr.y < 0.42)) {
-                    tr.opacity -= 0.05;
-                    if (tr.opacity <= 0) {
-                        activeDoorwayPerson = null;
-                        lastDoorCrossingTime = Date.now();
-                    }
-                }
+                ctx.fillStyle = gateCrossingAlert.color;
+                ctx.beginPath();
+                ctx.roundRect ? ctx.roundRect(bx, by, tw, 26, 6) : ctx.rect(bx, by, tw, 26);
+                ctx.fill();
 
-                // Draw high-tech AI detection box around the walking person
-                if (activeDoorwayPerson && tr.opacity > 0) {
-                    const px = tr.x * W;
-                    const py = tr.y * H;
-                    const bw = Math.max(54, W * 0.095);
-                    const bh = Math.max(100, H * 0.29);
-                    const bx1 = px - bw / 2;
-                    const by1 = py - bh / 2;
-
-                    ctx.save();
-                    ctx.globalAlpha = Math.max(0, tr.opacity);
-                    const color = tr.isReg ? '#10b981' : '#f59e0b';
-                    ctx.strokeStyle = color;
-                    ctx.lineWidth = 2.5;
-                    ctx.strokeRect(bx1, by1, bw, bh);
-
-                    // High-tech corner accents
-                    const cl = 10;
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.lineWidth = 3;
-                    ctx.beginPath(); ctx.moveTo(bx1, by1 + cl); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cl, by1); ctx.stroke();
-                    ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1); ctx.lineTo(bx1 + bw, by1); ctx.lineTo(bx1 + bw, by1 + cl); ctx.stroke();
-                    ctx.beginPath(); ctx.moveTo(bx1, by1 + bh - cl); ctx.lineTo(bx1, by1 + bh); ctx.lineTo(bx1 + cl, by1 + bh); ctx.stroke();
-                    ctx.beginPath(); ctx.moveTo(bx1 + bw - cl, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh); ctx.lineTo(bx1 + bw, by1 + bh - cl); ctx.stroke();
-
-                    // Name tag banner
-                    const label = tr.isReg ? `[${tr.person.staff_code}] ${tr.person.name} (${tr.person.designation})` : `⚠️ UNREGISTERED VISITOR`;
-                    ctx.font = 'bold 11px Inter, sans-serif';
-                    const tw = ctx.measureText(label).width + 16;
-                    ctx.fillStyle = color;
-                    ctx.fillRect(bx1, Math.max(0, by1 - 22), tw, 22);
-                    ctx.fillStyle = '#000000';
-                    ctx.fillText(label, bx1 + 6, Math.max(15, by1 - 6));
-                    ctx.restore();
-                }
+                ctx.fillStyle = '#000000';
+                ctx.fillText(text, bx + 12, by + 17);
+                ctx.restore();
+            } else if (gateCrossingAlert && now >= gateCrossingAlert.expiresAt) {
+                gateCrossingAlert = null;
             }
 
             const elFps = document.getElementById('liveFps');
@@ -2593,94 +2704,6 @@ function startRealVideoVisionLoop() {
         requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
-}
-
-// Crisp Human Face Snapshot for Unknown Visitors (never empty door frames!)
-function captureVisitorSnapshot(tr) {
-    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-    // Use high-resolution registered guest face portrait with security HUD
-    const realFaceUrl = 'data/staff_photos/staff_FC-TXS-184_e237a7.jpg';
-    return realFaceUrl;
-}
-
-function triggerStandaloneCrossing(tr, direction = 'IN') {
-    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-    const isStaff = tr.isReg;
-
-    if (isStaff) {
-        if (direction === 'IN') {
-            standaloneStats.session_in++;
-            standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
-            tr.person.status = 'Working';
-            tr.person.in_count = (tr.person.in_count || 0) + 1;
-            if (!tr.person.in_time) tr.person.in_time = timeStr;
-
-            standaloneEvents.unshift({
-                type: 'registered',
-                title: `${tr.person.name} (${tr.person.designation})`,
-                code: tr.person.staff_code,
-                badge: 'Gate IN',
-                msg: `Verified Face ID. Checked IN at ${timeStr}. Work timer active.`,
-                time: timeStr,
-                direction: 'IN'
-            });
-        } else {
-            standaloneStats.session_out++;
-            standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
-            tr.person.status = 'Outside';
-            tr.person.out_count = (tr.person.out_count || 0) + 1;
-            tr.person.out_time = timeStr;
-
-            standaloneEvents.unshift({
-                type: 'registered',
-                title: `${tr.person.name} (${tr.person.designation})`,
-                code: tr.person.staff_code,
-                badge: 'Gate OUT',
-                msg: `Checked OUT at ${timeStr}. Gate exit recorded.`,
-                time: timeStr,
-                direction: 'OUT'
-            });
-        }
-    } else {
-        // Unknown visitor
-        if (direction === 'IN') {
-            standaloneStats.session_unknown++;
-            standaloneStats.unknowns_today++;
-        }
-
-        // Capture crisp crystal-clear HD snapshot
-        const snapUrl = captureVisitorSnapshot(tr);
-
-        standaloneUnknowns.unshift({
-            id: Date.now(),
-            time: timeStr,
-            date: getLocalDateString(),
-            snapshot_url: snapUrl,
-            camera_id: 'Gate Cam 1',
-            status: 'Unreviewed',
-            notes: `Unregistered visitor crossed gate ${direction}`
-        });
-
-        standaloneEvents.unshift({
-            type: 'unknown',
-            title: '⚠️ Unknown Visitor Detected',
-            code: 'UNREG-FACE',
-            badge: `Gate ${direction}`,
-            msg: `Unregistered face crossed gate at ${timeStr}. High-Res snapshot captured.`,
-            time: timeStr,
-            direction: direction,
-            snapshot: snapUrl
-        });
-
-        if (currentTab === 'unknowns') renderStandaloneUnknowns();
-    }
-
-    if (standaloneEvents.length > 25) standaloneEvents.pop();
-
-    renderStandaloneStats();
-    renderStandaloneEvents();
-    if (currentTab === 'reports') renderStandaloneReports();
-    saveAppStateToStorage();
 }
 
 // ─── Renderers for Standalone Mode ──────────────────────────────────────────
