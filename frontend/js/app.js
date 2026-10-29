@@ -1396,8 +1396,14 @@ function renderAttendanceReportTable(records, reportDate) {
     if (records.length === 0) {
         tableBody.innerHTML = `
             <tr>
-                <td colspan="11" style="text-align: center; color: var(--text-muted); padding: 2.5rem;">
-                    No attendance recorded for ${reportDate}. Staff will automatically appear here when crossing the gate camera.
+                <td colspan="11" style="text-align: center; color: #94a3b8; padding: 3.5rem 1rem;">
+                    <div style="font-size: 2.2rem; margin-bottom: 0.6rem;">📅</div>
+                    <h3 style="color: #f8fafc; font-size: 1.15rem; font-weight: 700; margin-bottom: 0.4rem;">
+                        No Attendance Records Found for ${escapeHtml(reportDate)}
+                    </h3>
+                    <p style="font-size: 0.82rem; color: #64748b; max-width: 480px; margin: 0 auto;">
+                        No gate crossings or staff attendance events recorded on this date. Select today's date (${getLocalDateString()}) to view active gate logs.
+                    </p>
                 </td>
             </tr>
         `;
@@ -1446,9 +1452,14 @@ function renderAttendanceReportTable(records, reportDate) {
         const hoursDisplay = (r.status === 'Working') ? `⏳ ${formattedWorkTime} (Ongoing)` : `✓ ${formattedWorkTime}`;
 
         // Status badge display
-        const statusBadge = isOutside ?
-            `<span class="status-badge" style="background: rgba(245,158,11,0.2); color: #fbbf24; font-weight: 700;">🚪 Outside Gate</span>` :
-            `<span class="status-badge ${statusClass}">${r.status}</span>`;
+        let statusBadge = '';
+        if (r.status === 'Not Checked In' || r.in_count === 0) {
+            statusBadge = `<span class="status-badge" style="background: rgba(148,163,184,0.15); color: #94a3b8; font-weight: 600;">⚪ Not Arrived</span>`;
+        } else if (isOutside) {
+            statusBadge = `<span class="status-badge" style="background: rgba(245,158,11,0.2); color: #fbbf24; font-weight: 700;">🚪 Outside Gate</span>`;
+        } else {
+            statusBadge = `<span class="status-badge ${statusClass}">${r.status}</span>`;
+        }
 
         html += `
             <tr data-name="${escapeHtml(r.name || '').toLowerCase()}" data-desig="${escapeHtml(r.designation || '').toLowerCase()}" data-code="${escapeHtml(r.staff_code || '').toLowerCase()}" data-status="${r.status || 'Working'}">
@@ -2147,77 +2158,30 @@ let standaloneVideoEl = null;
 let standaloneSource = 'file'; // 'file' | 'webcam' | 'upload'
 let standaloneWebcamStream = null;
 
-// The 4 Real Staff Members registered in the system
-const REAL_STAFF_ROSTER = [
-    {
-        id: 10,
-        staff_code: "TXS-001",
-        name: "Milan Hidad",
-        designation: "Team Leader",
-        face_id: "FC-TXS-001",
-        photo_path: "data/staff_photos/staff_FC_TXS_001.jpg",
-        status: "Working",
-        in_time: "08:30:15",
-        out_time: null,
-        in_count: 3,
-        out_count: 2,
-        live_hours: 3.4
-    },
-    {
-        id: 9,
-        staff_code: "TXS-002",
-        name: "Bhavarth Hapani",
-        designation: "Software Engineer",
-        face_id: "FC-TXS-417",
-        photo_path: "data/staff_photos/staff_FC_TXS_417.jpg",
-        status: "Working",
-        in_time: "09:00:22",
-        out_time: null,
-        in_count: 4,
-        out_count: 3,
-        live_hours: 2.9
-    },
-    {
-        id: 11,
-        staff_code: "TXS-003",
-        name: "Vishal Morya",
-        designation: "Accountant",
-        face_id: "FC-TXS-002",
-        photo_path: "data/staff_photos/staff_FC_TXS_002.jpg",
-        status: "Working",
-        in_time: "09:15:00",
-        out_time: null,
-        hours_outside: 0,
-        in_count: 2,
-        out_count: 1,
-        live_hours: 3.2
-    },
-    {
-        id: 12,
-        staff_code: "TXS-004",
-        name: "Mahesh Ratod",
-        designation: "Accountant Assistant",
-        face_id: "FC-TXS-003",
-        photo_path: "data/staff_photos/staff_FC_TXS_003.jpg",
-        status: "Working",
-        in_time: "08:45:10",
-        out_time: null,
-        in_count: 3,
-        out_count: 2,
-        live_hours: 3.1
-    }
+// Clean Staff Templates starting from strict ZERO for live testing
+const STAFF_TEMPLATES = [
+    { id: 10, staff_code: "TXS-001", name: "Milan Hidad", designation: "Team Leader", face_id: "FC-TXS-001", photo_path: "data/staff_photos/staff_FC_TXS_001.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 9, staff_code: "TXS-002", name: "Bhavarth Hapani", designation: "Software Engineer", face_id: "FC-TXS-417", photo_path: "data/staff_photos/staff_FC_TXS_417.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 11, staff_code: "TXS-003", name: "Vishal Morya", designation: "Accountant", face_id: "FC-TXS-002", photo_path: "data/staff_photos/staff_FC_TXS_002.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 12, staff_code: "TXS-004", name: "Mahesh Ratod", designation: "Accountant Assistant", face_id: "FC-TXS-003", photo_path: "data/staff_photos/staff_FC_TXS_003.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 }
 ];
+
+// Separate rosters for Live Camera vs Testing Video
+let LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+let TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+let REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER; // Active reference
+let reportsViewMode = 'live'; // 'live' | 'testing'
 
 let standaloneStats = {
     total_staff: 4,
-    present_today: 4,
-    currently_inside: 4,
-    absent_today: 0,
+    present_today: 0,
+    currently_inside: 0,
+    absent_today: 4,
     unknowns_today: 0,
     fps: 30.0,
-    source_type: "file",
-    session_in: 12,
-    session_out: 9,
+    source_type: "webcam",
+    session_in: 0,
+    session_out: 0,
     session_unknown: 0,
     is_counting: false
 };
@@ -2279,10 +2243,31 @@ function initStandaloneRealVideoMode() {
     // Start video AI analysis loop on gate canvas
     startRealVideoVisionLoop();
 
-    // If counting was active before refresh, resume live counting seamlessly
+    // Check saved source preference (default to 'webcam' for live camera tracking)
+    const savedSource = localStorage.getItem('aicam_video_source') || 'webcam';
+    standaloneSource = savedSource;
+    const btnWebcam = document.getElementById('btnSrcWebcam');
+    const btnTest = document.getElementById('btnSrcTestVideo');
+
+    if (savedSource === 'webcam') {
+        if (btnWebcam) btnWebcam.className = 'btn btn-primary';
+        if (btnTest) btnTest.className = 'btn btn-secondary';
+    } else {
+        if (btnTest) btnTest.className = 'btn btn-primary';
+        if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
+    }
+
+    // Check counting state: only start if explicitly running previously; default is STOPPED
     const wasActive = localStorage.getItem('aicam_counting_active');
-    if (wasActive === '1' || wasActive === null) {
+    if (wasActive === '1') {
         standaloneStartCounting();
+    } else {
+        // Stay 100% STOPPED! Never autoplay testing video clip on refresh!
+        isStandaloneCounting = false;
+        standaloneStats.is_counting = false;
+        updateCountingStatusUI(false);
+        showStandbyOverlayImmediate();
+        if (standaloneVideoEl) standaloneVideoEl.pause();
     }
 
     // Work timer ticker (updates live hours every second)
@@ -2328,9 +2313,10 @@ function standaloneStopCounting() {
     if (standaloneVideoEl) {
         standaloneVideoEl.pause();
     }
-    showStandbyOverlayTemporary();
+    showStandbyOverlayImmediate();
+    localStorage.setItem('aicam_counting_active', '0');
 
-    showNotification('⏸️ Live Video & AI Tracking Paused.', 'warning');
+    showNotification('⏸️ Live Camera & AI Counting Stopped.', 'warning');
 }
 
 function standaloneResetCounts() {
@@ -2416,6 +2402,7 @@ async function standaloneSetVideoSource(type, path = null) {
 function saveAppStateToStorage() {
     try {
         localStorage.setItem('aicam_counting_active', isStandaloneCounting ? '1' : '0');
+        localStorage.setItem('aicam_video_source', standaloneSource);
         localStorage.setItem('aicam_staff_roster', JSON.stringify(REAL_STAFF_ROSTER));
         localStorage.setItem('aicam_standalone_stats', JSON.stringify(standaloneStats));
         localStorage.setItem('aicam_standalone_events', JSON.stringify(standaloneEvents));
@@ -2426,19 +2413,37 @@ function saveAppStateToStorage() {
 
 function loadAppStateFromStorage() {
     try {
+        // Enforce clean zero start for today's new testing session
+        if (localStorage.getItem('aicam_roster_zero_v3') !== '1') {
+            localStorage.removeItem('aicam_staff_roster');
+            localStorage.removeItem('aicam_standalone_stats');
+            localStorage.setItem('aicam_roster_zero_v3', '1');
+            LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+            TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+            REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER;
+            standaloneStats.present_today = 0;
+            standaloneStats.currently_inside = 0;
+            standaloneStats.absent_today = 4;
+            standaloneStats.session_in = 0;
+            standaloneStats.session_out = 0;
+            standaloneStats.session_unknown = 0;
+            standaloneStats.unknowns_today = 0;
+            return;
+        }
+
         const staff = localStorage.getItem('aicam_staff_roster');
         if (staff) {
             const arr = JSON.parse(staff);
             if (Array.isArray(arr) && arr.length >= 4) {
                 arr.forEach((saved, idx) => {
                     if (REAL_STAFF_ROSTER[idx]) {
-                        REAL_STAFF_ROSTER[idx].in_count = saved.in_count;
-                        REAL_STAFF_ROSTER[idx].out_count = saved.out_count;
-                        REAL_STAFF_ROSTER[idx].live_hours = saved.live_hours;
-                        REAL_STAFF_ROSTER[idx].in_time = saved.in_time;
-                        REAL_STAFF_ROSTER[idx].out_time = saved.out_time;
-                        REAL_STAFF_ROSTER[idx].status = saved.status;
-                        REAL_STAFF_ROSTER[idx].hours_outside = saved.hours_outside;
+                        REAL_STAFF_ROSTER[idx].in_count = saved.in_count || 0;
+                        REAL_STAFF_ROSTER[idx].out_count = saved.out_count || 0;
+                        REAL_STAFF_ROSTER[idx].live_hours = saved.live_hours || 0.0;
+                        REAL_STAFF_ROSTER[idx].in_time = saved.in_time || null;
+                        REAL_STAFF_ROSTER[idx].out_time = saved.out_time || null;
+                        REAL_STAFF_ROSTER[idx].status = saved.status || 'Not Checked In';
+                        REAL_STAFF_ROSTER[idx].hours_outside = saved.hours_outside || 0;
                     }
                 });
             }
@@ -2727,13 +2732,21 @@ window.standaloneSimPass = function(staffId, dir) {
     if (!s) return;
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     if (dir === 'IN') {
+        const wasFirstIn = (s.in_count === 0);
         s.status = 'Working';
-        s.in_count++;
+        s.in_count = (s.in_count || 0) + 1;
+        if (!s.in_time) s.in_time = timeStr;
+        s.out_time = null;
+        s.hours_outside = 0;
         standaloneStats.session_in++;
         standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+        if (wasFirstIn) {
+            standaloneStats.present_today = Math.min(4, standaloneStats.present_today + 1);
+            standaloneStats.absent_today = Math.max(0, 4 - standaloneStats.present_today);
+        }
     } else {
-        s.status = 'Outside';
-        s.out_count++;
+        s.status = 'Outside Gate';
+        s.out_count = (s.out_count || 0) + 1;
         s.out_time = timeStr;
         standaloneStats.session_out++;
         standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
@@ -2799,28 +2812,64 @@ function renderStandaloneEvents() {
 }
 
 // 11-column perfectly aligned Daily Attendance & Working Hours Reports
-function renderStandaloneReports(selectedDate = null) {
-    const reportDate = selectedDate || (document.getElementById('reportDatePicker') ? document.getElementById('reportDatePicker').value : null) || getLocalDateString();
 
-    const records = REAL_STAFF_ROSTER.map(s => ({
+// ─── Separate Tracking Data: Live Camera vs. Testing Video ──────────────────
+window.setReportsViewMode = function(mode) {
+    reportsViewMode = mode;
+    REAL_STAFF_ROSTER = (mode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+
+    const btnLive = document.getElementById('btnReportsViewLive');
+    const btnTest = document.getElementById('btnReportsViewTest');
+    const banner = document.getElementById('reportSourceBanner');
+
+    if (mode === 'live') {
+        if (btnLive) btnLive.className = 'btn btn-primary';
+        if (btnTest) btnTest.className = 'btn btn-secondary';
+        if (banner) banner.innerHTML = '<span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>';
+    } else {
+        if (btnTest) btnTest.className = 'btn btn-primary';
+        if (btnLive) btnLive.className = 'btn btn-secondary';
+        if (banner) banner.innerHTML = '<span>🎬 Displaying: <strong>Testing Video Benchmark Data</strong></span>';
+    }
+
+    renderStandaloneReports();
+};
+
+function renderStandaloneReports(selectedDate = null) {
+    const dateInput = document.getElementById('reportDatePicker');
+    const today = getLocalDateString();
+    const reportDate = selectedDate || (dateInput && dateInput.value ? dateInput.value.trim() : today);
+
+    // If selected date is NOT today, check if any saved history exists for that date
+    if (reportDate !== today) {
+        const history = JSON.parse(localStorage.getItem('aicam_attendance_history') || '{}');
+        const pastRecords = history[reportDate] || [];
+        renderAttendanceReportTable(pastRecords, reportDate);
+        return;
+    }
+
+    // Today's active records from active roster (Live or Testing)
+    const activeRoster = (reportsViewMode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+    const records = activeRoster.map(s => ({
         id: s.id,
         staff_code: s.staff_code,
         name: s.name,
         designation: s.designation,
         photo_path: s.photo_path,
         status: s.status,
-        date: reportDate,
-        in_time: s.in_time || '08:30:15',
+        date: today,
+        in_time: s.in_time || '—',
         out_time: s.out_time,
         hours_outside: s.hours_outside || 0.0,
         live_hours: s.live_hours || 0.0,
         total_hours: s.live_hours || 0.0,
-        in_count: s.in_count || 1,
+        in_count: s.in_count || 0,
         out_count: s.out_count || 0
     }));
 
-    renderAttendanceReportTable(records, reportDate);
+    renderAttendanceReportTable(records, today);
 }
+
 
 function renderStandaloneUnknowns(filterDate = null) {
     const targetDate = filterDate || (document.getElementById('unknownDatePicker') ? document.getElementById('unknownDatePicker').value : null) || getLocalDateString();

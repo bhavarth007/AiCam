@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=10.0?v=5.0">
+  <link rel="stylesheet" href="./css/style.css?v=11.0?v=5.0">
 </head>
 <body>
 
@@ -159,9 +159,8 @@
 
             <!-- 2. Real Video / Webcam Player (used on GitHub Pages or standalone browser mode with 0-sec delay) -->
             <video id="html5VideoPlayer"
-                   src="testing video.mp4"
+                   src=""
                    playsinline
-                   autoplay
                    muted
                    loop
                    crossorigin="anonymous"
@@ -352,6 +351,23 @@
           <button id="btnPrintReport" class="btn btn-emerald" style="padding: 0.55rem 1.1rem;">
             <span>🖨️</span> Print Official Attendance Sheet
           </button>
+        </div>
+      </div>
+
+      
+      <!-- Source-Separated Attendance Selector -->
+      <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15,23,42,0.7); padding: 0.65rem 1rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+        <div style="display: flex; gap: 0.6rem; align-items: center;">
+          <span style="font-size: 0.8rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.03em;">Attendance Mode:</span>
+          <button id="btnReportsViewLive" class="btn btn-primary" style="padding: 0.35rem 0.85rem; font-size: 0.78rem; font-weight: 700;" onclick="setReportsViewMode('live')">
+            🎥 Live Camera Records
+          </button>
+          <button id="btnReportsViewTest" class="btn btn-secondary" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;" onclick="setReportsViewMode('testing')">
+            🎬 Testing Video Records
+          </button>
+        </div>
+        <div id="reportSourceBanner" style="font-size: 0.78rem; font-family: monospace; color: #34d399; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+          <span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>
         </div>
       </div>
 
@@ -779,7 +795,7 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=10.0"></script>
+  <script src="./js/app.js?v=11.0"></script>
 
   
 
