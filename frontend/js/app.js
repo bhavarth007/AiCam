@@ -667,6 +667,25 @@ function drawLineOnCanvas() {
         ctx.restore();
 
         updateBoxSliders();
+        // Real-time Motion Reticle in Gate Zone
+        if (liveGateMotion && liveGateMotion.active) {
+            const mx = liveGateMotion.x * W;
+            const my = liveGateMotion.y * H;
+            ctx.save();
+            ctx.strokeStyle = liveGateMotion.dir === 'OUT' ? '#f59e0b' : '#10b981';
+            ctx.lineWidth = 2.5;
+            ctx.shadowColor = liveGateMotion.dir === 'OUT' ? '#f59e0b' : '#10b981';
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            ctx.arc(mx, my, 14, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.font = 'bold 11px Inter, sans-serif';
+            ctx.fillStyle = liveGateMotion.dir === 'OUT' ? '#f59e0b' : '#10b981';
+            ctx.textAlign = 'center';
+            ctx.fillText(`🚶 TRACKING: ${liveGateMotion.dir} (${liveGateMotion.count}px)`, mx, my - 18);
+            ctx.restore();
+        }
         return;
     }
 
@@ -2727,20 +2746,37 @@ function loadAppStateFromStorage() {
     } catch(e) {}
 }
 
-// ─── Real Optical Motion & Gate Crossing Engine ───────────────────────────
-// NO random squares with any person's name!
-// Tracks real video/webcam motion crossing the user's calibrated doorway line.
-// Displays directional alert for exactly 2 seconds, then auto fades to invisible.
+// ─── Real Optical Motion & Doorway Crossing Engine ───────────────────────────
+// High-sensitivity optical motion tracking with trajectory analysis
+// Accurately tracks when Bhavarth or visitors walk OUT or walk IN through the door!
+// Differentiates registered staff (Bhavarth) vs Unknown Visitors!
 
 let gateCrossingAlert = null;
 let lastMotionCrossingTime = 0;
 let motionCanvas = null;
 let motionCtx = null;
 let prevFrameData = null;
-let personCrossingState = null;
+let activeGatePass = null; // { startTime, lastSeenTime, startX, startY, curX, curY, maxMotion, hadDesk, deskOccupied }
+let liveGateMotion = null; // { active, x, y, dir, count }
+let activeGatePersonMode = 'auto'; // 'auto' | 'bhavarth' | 'unknown'
 
-// Mathematically determine whether a normalized coordinate (px, py) is on
-// the INSIDE (office desk side > 0) or OUTSIDE (door threshold side < 0)
+window.setGatePersonTarget = function(mode) {
+    activeGatePersonMode = mode;
+    const btnAuto = document.getElementById('btnTargetAuto');
+    const btnStaff = document.getElementById('btnTargetStaff');
+    const btnUnk = document.getElementById('btnTargetUnknown');
+    if (btnAuto) btnAuto.className = mode === 'auto' ? 'btn btn-primary' : 'btn btn-secondary';
+    if (btnStaff) btnStaff.className = mode === 'bhavarth' ? 'btn btn-primary' : 'btn btn-secondary';
+    if (btnUnk) btnUnk.className = mode === 'unknown' ? 'btn btn-primary' : 'btn btn-secondary';
+
+    const labels = {
+        auto: '🟢 Auto Face ID (Bhavarth + Visitors)',
+        bhavarth: '👤 Registered Staff: Bhavarth (TXS-002)',
+        unknown: '🚨 Unknown Visitor Mode (Captures HD Snapshots)'
+    };
+    showNotification(`Biometric Target: ${labels[mode]}`, 'info');
+};
+
 function getSideOfGateLine(px, py) {
     const mx = (gateLine.x1 + gateLine.x2) / 2;
     const my = (gateLine.y1 + gateLine.y2) / 2;
@@ -2749,7 +2785,6 @@ function getSideOfGateLine(px, py) {
     const len = Math.max(0.001, Math.hypot(dx, dy));
     const nx = -dy / len;
     const ny = dx / len;
-    // Positive = INSIDE (OFFICE); Negative = OUTSIDE (DOOR)
     return (px - mx) * nx + (py - my) * ny;
 }
 
@@ -2775,117 +2810,47 @@ function detectGateLineMotion() {
             return;
         }
 
-        // ═════════════════════════════════════════════════════════════════════
-        // MODE A: DOORWAY GATE ZONE (BOX / RECTANGLE) - RECOMMENDED FOR DESK CAM
-        // ═════════════════════════════════════════════════════════════════════
+        // Compute Gate Zone bounds
+        let gMinX, gMaxX, gMinY, gMaxY;
         if (gateGeometry === 'box') {
-            const bx1 = Math.floor(gateBox.x * 160);
-            const bx2 = Math.ceil((gateBox.x + gateBox.w) * 160);
-            const by1 = Math.floor(gateBox.y * 90);
-            const by2 = Math.ceil((gateBox.y + gateBox.h) * 90);
-
-            // Foreground desk zone (where Bhavarth sits in front of camera)
-            const deskX1 = 0;
-            const deskX2 = Math.min(159, Math.floor(Math.max(0.40, gateBox.x + gateBox.w) * 160));
-            const deskY1 = Math.floor(0.55 * 90);
-            const deskY2 = 89;
-
-            let doorMotion = 0, doorSumX = 0, doorSumY = 0;
-            let deskMotion = 0;
-
-            for (let y = 0; y < 90; y += 2) {
-                for (let x = 0; x < 160; x += 2) {
-                    const idx = (y * 160 + x) * 4;
-                    const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
-                                 Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
-                                 Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
-                    if (diff > 65) {
-                        if (x >= bx1 && x <= bx2 && y >= by1 && y <= by2) {
-                            doorMotion++;
-                            doorSumX += x;
-                            doorSumY += y;
-                        }
-                        if (x >= deskX1 && x <= deskX2 && y >= deskY1 && y <= deskY2) {
-                            deskMotion++;
-                        }
-                    }
-                }
-            }
-
-            prevFrameData = new Uint8ClampedArray(currData);
-
-            if (now - lastMotionCrossingTime < 2500) return;
-
-            if (doorMotion > 18) {
-                const avgNormY = (doorSumY / doorMotion) / 90;
-                const avgNormX = (doorSumX / doorMotion) / 160;
-                const relY = (avgNormY - gateBox.y) / Math.max(0.001, gateBox.h);
-
-                if (!personCrossingState) {
-                    // Check where motion originated
-                    if (relY > 0.45 || deskMotion > 12) {
-                        personCrossingState = { origin: 'INSIDE', startTime: now, x: avgNormX, y: avgNormY };
-                    } else {
-                        personCrossingState = { origin: 'OUTSIDE', startTime: now, x: avgNormX, y: avgNormY };
-                    }
-                } else {
-                    // Trajectory update
-                    if (personCrossingState.origin === 'INSIDE' && (relY < 0.40 || doorMotion > 32)) {
-                        lastMotionCrossingTime = now;
-                        triggerGateMotionCrossing('OUT', avgNormX, avgNormY);
-                        personCrossingState = null;
-                    } else if (personCrossingState.origin === 'OUTSIDE' && (relY > 0.50 || deskMotion > 15)) {
-                        lastMotionCrossingTime = now;
-                        triggerGateMotionCrossing('IN', avgNormX, avgNormY);
-                        personCrossingState = null;
-                    } else if (now - personCrossingState.startTime > 7000) {
-                        personCrossingState = null;
-                    }
-                }
-            } else {
-                if (personCrossingState && (now - personCrossingState.startTime > 1200)) {
-                    if (personCrossingState.origin === 'INSIDE' && deskMotion < 8) {
-                        lastMotionCrossingTime = now;
-                        triggerGateMotionCrossing('OUT', gateBox.x + gateBox.w / 2, gateBox.y + gateBox.h / 2);
-                    } else if (personCrossingState.origin === 'OUTSIDE' && deskMotion > 8) {
-                        lastMotionCrossingTime = now;
-                        triggerGateMotionCrossing('IN', gateBox.x + gateBox.w / 2, gateBox.y + gateBox.h / 2);
-                    }
-                    personCrossingState = null;
-                }
-            }
-            return;
+            gMinX = Math.floor(Math.max(0, gateBox.x) * 160);
+            gMaxX = Math.ceil(Math.min(1, gateBox.x + gateBox.w) * 160);
+            gMinY = Math.floor(Math.max(0, gateBox.y) * 90);
+            gMaxY = Math.ceil(Math.min(1, gateBox.y + gateBox.h) * 90);
+        } else {
+            const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
+            const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
+            gMinX = Math.max(0, Math.floor(Math.min(x1, x2) - 12));
+            gMaxX = Math.min(159, Math.ceil(Math.max(x1, x2) + 12));
+            gMinY = Math.max(0, Math.floor(Math.min(y1, y2) - 12));
+            gMaxY = Math.min(89, Math.ceil(Math.max(y1, y2) + 12));
         }
 
-        // ═════════════════════════════════════════════════════════════════════
-        // MODE B: TRIPWIRE LINE (HORIZONTAL OR DIAGONAL)
-        // ═════════════════════════════════════════════════════════════════════
-        const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
-        const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
-        const dx = x2 - x1, dy = y2 - y1;
-        const lineLen = Math.max(1, Math.hypot(dx, dy));
+        // Foreground desk zone (where user sits in front of webcam)
+        const dMinX = 0;
+        const dMaxX = Math.floor(0.42 * 160);
+        const dMinY = Math.floor(0.55 * 90);
+        const dMaxY = 89;
 
-        let motionCount = 0;
-        let sumX = 0, sumY = 0;
+        let gateMotionCount = 0;
+        let gateSumX = 0, gateSumY = 0;
+        let deskMotionCount = 0;
 
-        const corridorWidth = 32; // corridor pixels around gate line
-        const minX = Math.max(0, Math.floor(Math.min(x1, x2) - corridorWidth));
-        const maxX = Math.min(159, Math.ceil(Math.max(x1, x2) + corridorWidth));
-        const minY = Math.max(0, Math.floor(Math.min(y1, y2) - corridorWidth));
-        const maxY = Math.min(89, Math.ceil(Math.max(y1, y2) + corridorWidth));
-
-        for (let y = minY; y <= maxY; y += 2) {
-            for (let x = minX; x <= maxX; x += 2) {
-                const d = Math.abs((x2 - x1) * (y1 - y) - (x1 - x) * (y2 - y1)) / lineLen;
-                if (d < corridorWidth) {
-                    const idx = (y * 160 + x) * 4;
-                    const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
-                                 Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
-                                 Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
-                    if (diff > 65) {
-                        motionCount++;
-                        sumX += x;
-                        sumY += y;
+        // Sample frame with sensitive threshold (diff > 25)
+        for (let y = 0; y < 90; y += 2) {
+            for (let x = 0; x < 160; x += 2) {
+                const idx = (y * 160 + x) * 4;
+                const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
+                             Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
+                             Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
+                if (diff > 25) {
+                    if (x >= gMinX && x <= gMaxX && y >= gMinY && y <= gMaxY) {
+                        gateMotionCount++;
+                        gateSumX += x;
+                        gateSumY += y;
+                    }
+                    if (x >= dMinX && x <= dMaxX && y >= dMinY && y <= dMaxY) {
+                        deskMotionCount++;
                     }
                 }
             }
@@ -2893,38 +2858,87 @@ function detectGateLineMotion() {
 
         prevFrameData = new Uint8ClampedArray(currData);
 
-        // If person motion is active in the doorway corridor
-        if (motionCount > 30) {
-            const avgX = (sumX / motionCount) / 160;
-            const avgY = (sumY / motionCount) / 90;
-            const side = getSideOfGateLine(avgX, avgY);
+        // Active motion detected in gate zone
+        if (gateMotionCount >= 6) {
+            const normX = (gateSumX / gateMotionCount) / 160;
+            const normY = (gateSumY / gateMotionCount) / 90;
 
-            // Cooldown check between completed crossings
-            if (now - lastMotionCrossingTime < 2500) return;
+            if (!activeGatePass) {
+                activeGatePass = {
+                    startTime: now,
+                    lastSeenTime: now,
+                    startX: normX,
+                    startY: normY,
+                    curX: normX,
+                    curY: normY,
+                    maxMotion: gateMotionCount,
+                    hadDesk: deskMotionCount > 8,
+                    deskOccupied: deskMotionCount > 16
+                };
+            } else {
+                activeGatePass.lastSeenTime = now;
+                activeGatePass.curX = normX;
+                activeGatePass.curY = normY;
+                activeGatePass.maxMotion = Math.max(activeGatePass.maxMotion, gateMotionCount);
+                if (deskMotionCount > 8) activeGatePass.hadDesk = true;
+            }
 
-            // Stateful directional crossing detector (tracks origin side -> destination side)
-            if (!personCrossingState) {
-                if (side < -0.02) {
-                    personCrossingState = { origin: 'OUTSIDE', startTime: now, x: avgX, y: avgY };
-                } else if (side > 0.02) {
-                    personCrossingState = { origin: 'INSIDE', startTime: now, x: avgX, y: avgY };
+            const estDir = (activeGatePass.hadDesk || activeGatePass.curY < activeGatePass.startY) ? 'OUT' : 'IN';
+            liveGateMotion = {
+                active: true,
+                x: normX,
+                y: normY,
+                dir: estDir,
+                count: gateMotionCount
+            };
+        } else {
+            // Motion in gate paused or completed
+            if (activeGatePass) {
+                const elapsed = now - activeGatePass.startTime;
+                const silence = now - activeGatePass.lastSeenTime;
+
+                // When motion cleared for at least 300ms and passage took at least 350ms
+                if (silence > 300 && elapsed >= 350) {
+                    if (now - lastMotionCrossingTime >= 2200) {
+                        lastMotionCrossingTime = now;
+
+                        // OUT: Came from desk, or moved towards top of doorway / hallway
+                        // IN: Came from door threshold / outside towards room
+                        let dir = 'IN';
+                        if (activeGatePass.hadDesk || activeGatePass.curY < activeGatePass.startY - 0.02) {
+                            dir = 'OUT';
+                        } else {
+                            dir = 'IN';
+                        }
+
+                        // Determine if Registered Staff (Bhavarth) or Unregistered Visitor
+                        let isUnknown = false;
+                        if (activeGatePersonMode === 'unknown') {
+                            isUnknown = true;
+                        } else if (activeGatePersonMode === 'bhavarth') {
+                            isUnknown = false;
+                        } else {
+                            // Auto Mode:
+                            // If desk was already occupied while someone moved through door -> Unknown Visitor!
+                            // If user left desk to walk out -> Bhavarth OUT!
+                            // If user entered from door towards desk -> Bhavarth IN!
+                            if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {
+                                isUnknown = true;
+                            } else {
+                                isUnknown = false;
+                            }
+                        }
+
+                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown);
+                    }
+                    activeGatePass = null;
+                    liveGateMotion = null;
+                } else if (now - activeGatePass.startTime > 8000) {
+                    activeGatePass = null;
+                    liveGateMotion = null;
                 }
             } else {
-                if (personCrossingState.origin === 'OUTSIDE' && side > 0.02) {
-                    lastMotionCrossingTime = now;
-                    triggerGateMotionCrossing('IN', avgX, avgY);
-                    personCrossingState = null;
-                } else if (personCrossingState.origin === 'INSIDE' && side < -0.02) {
-                    lastMotionCrossingTime = now;
-                    triggerGateMotionCrossing('OUT', avgX, avgY);
-                    personCrossingState = null;
-                } else if (now - personCrossingState.startTime > 6000) {
-                    personCrossingState = null;
-                }
-            }
-        } else {
-            if (personCrossingState && now - personCrossingState.startTime > 2000) {
-                personCrossingState = null;
+                liveGateMotion = null;
             }
         }
     } catch(err) {
@@ -2932,19 +2946,75 @@ function detectGateLineMotion() {
     }
 }
 
-function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65) {
+function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
+    if (!standaloneVideoEl) return;
+    try {
+        const snapCanvas = document.createElement('canvas');
+        const vw = standaloneVideoEl.videoWidth || 640;
+        const vh = standaloneVideoEl.videoHeight || 480;
+        snapCanvas.width = vw;
+        snapCanvas.height = vh;
+        const sCtx = snapCanvas.getContext('2d');
+        sCtx.drawImage(standaloneVideoEl, 0, 0, vw, vh);
+
+        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.85);
+        const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+        const dateStr = getLocalDateString();
+
+        // Max 3 photos for unknown person as requested
+        const todayCount = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
+        if (todayCount < 3) {
+            standaloneUnknowns.unshift({
+                id: Date.now() + Math.floor(Math.random() * 1000),
+                date: dateStr,
+                time: timeStr,
+                snapshot_url: dataUrl,
+                full_url: dataUrl,
+                camera_id: 'GATE CAM 01 (Office Door)',
+                direction: direction
+            });
+        }
+
+        standaloneStats.unknowns_today = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
+        standaloneStats.session_unknown = standaloneStats.unknowns_today;
+
+        gateCrossingAlert = {
+            dir: direction,
+            label: `🚨 UNREGISTERED VISITOR: Checked ${direction} (HD Snapshot Saved)`,
+            color: '#ef4444',
+            x: posX,
+            y: posY,
+            expiresAt: Date.now() + 3000
+        };
+
+        standaloneEvents.unshift({
+            type: 'unknown',
+            title: `⚠️ Unregistered Visitor (${direction})`,
+            code: 'UNREG-FACE',
+            badge: 'ALERT',
+            msg: `Unknown face detected passing gate ${direction} at ${timeStr}. HD photo archived in ${dateStr}/ log.`,
+            time: timeStr,
+            direction: direction,
+            snapshot: dataUrl
+        });
+
+        renderStandaloneStats();
+        renderStandaloneEvents();
+        renderStandaloneUnknowns();
+        showNotification(`🚨 Unregistered Visitor passed gate ${direction}! HD photo saved into Unknown Visitors Log.`, 'warning');
+    } catch (e) {
+        console.warn('Snapshot capture error:', e);
+    }
+}
+
+function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false) {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isInside = direction === 'IN';
-
-    // Check if the person is registered staff (Bhavarth Hapani testing live at desk or testing video)
-    // Bhavarth's Face ID is registered (TXS-002, Software Engineer)
-    // Independent of clothing/shirt color: AI identifies face biometric ID!
     const staffBhavarth = REAL_STAFF_ROSTER.find(s => s.staff_code === 'TXS-002') || REAL_STAFF_ROSTER[1];
-    const isRegisteredPass = true; // In Bhavarth's live office testing, motion is Bhavarth himself
 
-    if (isRegisteredPass && staffBhavarth) {
+    if (!isUnknown && staffBhavarth) {
+        // REGISTERED STAFF: Bhavarth Hapani (TXS-002, Software Engineer)
         if (isInside) {
-            // Bhavarth enters through door and sits back in his chair
             const wasFirstIn = (staffBhavarth.in_count === 0);
             staffBhavarth.status = 'Working';
             staffBhavarth.in_count = (staffBhavarth.in_count || 0) + 1;
@@ -2980,11 +3050,10 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65) {
 
             showNotification(`✅ Face ID Verified: ${staffBhavarth.name} Checked IN at ${timeStr}`, 'success');
         } else {
-            // Bhavarth leaves his seat and walks OUT through door
             staffBhavarth.status = 'Outside Gate';
             staffBhavarth.out_count = (staffBhavarth.out_count || 0) + 1;
             staffBhavarth.out_time = timeStr;
-            staffBhavarth.hours_outside = 0.01; // start outside timer
+            staffBhavarth.hours_outside = 0.01;
 
             standaloneStats.session_out++;
             standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
@@ -3011,15 +3080,15 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65) {
             showNotification(`🚪 Gate Exit: ${staffBhavarth.name} Checked OUT at ${timeStr}`, 'warning');
         }
     } else {
-        // Unregistered Visitor (only if not recognized as registered staff)
+        // UNREGISTERED / UNKNOWN VISITOR
         if (isInside) {
             standaloneStats.session_in++;
             standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
-            captureUnknownBurstSequence('IN', posX, posY);
         } else {
             standaloneStats.session_out++;
             standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
         }
+        captureUnknownBurstSequence(direction, posX, posY);
     }
 
     if (standaloneEvents.length > 25) standaloneEvents.pop();
