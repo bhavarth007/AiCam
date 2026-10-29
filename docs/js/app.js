@@ -2480,13 +2480,27 @@ let lastMotionCrossingTime = 0;
 let motionCanvas = null;
 let motionCtx = null;
 let prevFrameData = null;
+let personCrossingState = null;
+
+// Mathematically determine whether a normalized coordinate (px, py) is on
+// the INSIDE (office desk side > 0) or OUTSIDE (door threshold side < 0)
+function getSideOfGateLine(px, py) {
+    const mx = (gateLine.x1 + gateLine.x2) / 2;
+    const my = (gateLine.y1 + gateLine.y2) / 2;
+    const dx = gateLine.x2 - gateLine.x1;
+    const dy = gateLine.y2 - gateLine.y1;
+    const len = Math.max(0.001, Math.hypot(dx, dy));
+    const nx = -dy / len;
+    const ny = dx / len;
+    // Positive = INSIDE (OFFICE); Negative = OUTSIDE (DOOR)
+    return (px - mx) * nx + (py - my) * ny;
+}
 
 function detectGateLineMotion() {
     if (!isStandaloneCounting || !standaloneVideoEl) return;
     if (standaloneVideoEl.paused || standaloneVideoEl.ended || standaloneVideoEl.readyState < 2) return;
 
     const now = Date.now();
-    if (now - lastMotionCrossingTime < 2400) return; // 2.4s cooldown between crossings
 
     if (!motionCanvas) {
         motionCanvas = document.createElement('canvas');
@@ -2504,18 +2518,15 @@ function detectGateLineMotion() {
             return;
         }
 
-        // Check motion corridor along gate line
         const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
         const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
         const dx = x2 - x1, dy = y2 - y1;
         const lineLen = Math.max(1, Math.hypot(dx, dy));
-        const nx = -dy / lineLen, ny = dx / lineLen;
 
         let motionCount = 0;
         let sumX = 0, sumY = 0;
-        let sumSide = 0;
 
-        const corridorWidth = 24; // corridor pixels
+        const corridorWidth = 32; // corridor pixels around gate line
         const minX = Math.max(0, Math.floor(Math.min(x1, x2) - corridorWidth));
         const maxX = Math.min(159, Math.ceil(Math.max(x1, x2) + corridorWidth));
         const minY = Math.max(0, Math.floor(Math.min(y1, y2) - corridorWidth));
@@ -2523,20 +2534,16 @@ function detectGateLineMotion() {
 
         for (let y = minY; y <= maxY; y += 2) {
             for (let x = minX; x <= maxX; x += 2) {
-                // Distance to line segment
                 const d = Math.abs((x2 - x1) * (y1 - y) - (x1 - x) * (y2 - y1)) / lineLen;
                 if (d < corridorWidth) {
                     const idx = (y * 160 + x) * 4;
                     const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
                                  Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
                                  Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
-                    if (diff > 75) {
+                    if (diff > 65) {
                         motionCount++;
                         sumX += x;
                         sumY += y;
-                        // Side of line: positive is inside, negative is outside
-                        const side = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
-                        sumSide += side > 0 ? 1 : -1;
                     }
                 }
             }
@@ -2544,14 +2551,44 @@ function detectGateLineMotion() {
 
         prevFrameData = new Uint8ClampedArray(currData);
 
-        // If sufficient person motion detected across doorway corridor
-        if (motionCount > 55) {
+        // If person motion is active in the doorway corridor
+        if (motionCount > 40) {
             const avgX = (sumX / motionCount) / 160;
             const avgY = (sumY / motionCount) / 90;
-            const direction = sumSide >= 0 ? 'IN' : 'OUT';
+            const side = getSideOfGateLine(avgX, avgY);
 
-            lastMotionCrossingTime = now;
-            triggerGateMotionCrossing(direction, avgX, avgY);
+            // Cooldown check between completed crossings
+            if (now - lastMotionCrossingTime < 2500) return;
+
+            // Stateful directional crossing detector (tracks origin side -> destination side)
+            if (!personCrossingState) {
+                if (side < -0.02) {
+                    personCrossingState = { origin: 'OUTSIDE', startTime: now, x: avgX, y: avgY };
+                } else if (side > 0.02) {
+                    personCrossingState = { origin: 'INSIDE', startTime: now, x: avgX, y: avgY };
+                }
+            } else {
+                // If they crossed over to the other side:
+                if (personCrossingState.origin === 'OUTSIDE' && side > 0.02) {
+                    // OUTSIDE -> INSIDE = GATE IN!
+                    lastMotionCrossingTime = now;
+                    triggerGateMotionCrossing('IN', avgX, avgY);
+                    personCrossingState = null;
+                } else if (personCrossingState.origin === 'INSIDE' && side < -0.02) {
+                    // INSIDE -> OUTSIDE = GATE OUT!
+                    lastMotionCrossingTime = now;
+                    triggerGateMotionCrossing('OUT', avgX, avgY);
+                    personCrossingState = null;
+                } else if (now - personCrossingState.startTime > 6000) {
+                    // Timeout if person walked away without crossing
+                    personCrossingState = null;
+                }
+            }
+        } else {
+            // Decay state if motion ceases
+            if (personCrossingState && now - personCrossingState.startTime > 2000) {
+                personCrossingState = null;
+            }
         }
     } catch(err) {
         // Fallback for CORS or canvas errors
