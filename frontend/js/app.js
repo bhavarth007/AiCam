@@ -1,3 +1,37 @@
+
+function formatOutsideDuration(hoursVal, outTimeStr) {
+    let mins = Math.round((hoursVal || 0) * 60);
+    if (outTimeStr) {
+        try {
+            const parts = outTimeStr.split(':');
+            if (parts.length >= 2) {
+                const now = new Date();
+                const outDate = new Date();
+                outDate.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2] || 0, 10), 0);
+                const diffMins = Math.round((now - outDate) / 60000);
+                if (diffMins > 0 && diffMins < 720) {
+                    mins = diffMins;
+                }
+            }
+        } catch(e) {}
+    }
+    if (mins <= 1) return '1 min out';
+    if (mins < 60) return `${mins} mins out`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h}h ${m}m out` : `${h}h out`;
+}
+
+function formatWorkingHours(hoursDecimal) {
+    const val = typeof hoursDecimal === 'number' ? hoursDecimal : parseFloat(hoursDecimal || 0);
+    const totalMinutes = Math.round(val * 60);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    if (h === 0) return `${m} mins`;
+    if (m === 0) return `${h} hrs`;
+    return `${h}h ${m}m`;
+}
+
 function getLocalDateString() {
     const d = new Date();
     const year = d.getFullYear();
@@ -191,7 +225,25 @@ function switchTab(tabId) {
 
 // ─── Gate Line State ─────────────────────────────────────────────────────────
 // Normalized 0.0-1.0 coordinates of the gate line endpoints
-let gateLine = { x1: 0.48, y1: 0.58, x2: 0.66, y2: 0.77 };
+// Default calibrated doorway threshold: (0.605, 0.604) to (0.766, 0.767)
+function loadSavedGateLine() {
+    try {
+        const s = localStorage.getItem('aicam_gate_line');
+        if (s) {
+            const p = JSON.parse(s);
+            if (typeof p.x1 === 'number' && typeof p.x2 === 'number') return p;
+        }
+    } catch(e) {}
+    return null;
+}
+
+function saveGateLineToStorage() {
+    try {
+        localStorage.setItem('aicam_gate_line', JSON.stringify(gateLine));
+    } catch(e) {}
+}
+
+let gateLine = loadSavedGateLine() || { x1: 0.605, y1: 0.604, x2: 0.766, y2: 0.767 };
 let lineOrientation = 'horizontal';
 let lineLength = 1.0;   // fraction of full span (0.1–1.0)
 let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
@@ -392,6 +444,7 @@ function onCanvasMouseMove(e) {
     showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
+    saveGateLineToStorage();
 }
 
 async function onCanvasMouseUp(e) {
@@ -589,6 +642,7 @@ window.onLineLengthChangeLive = function(val) {
     showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
+    saveGateLineToStorage();
 };
 
 window.onLineLengthInput = window.onLineLengthChangeLive;
@@ -618,6 +672,7 @@ window.onLinePosChangeLive = function(val) {
     showLabelsUntil = Date.now() + 2000;
     drawLineOnCanvas();
     throttledSendLineToServer();
+    saveGateLineToStorage();
 };
 
 window.onLinePosInput = window.onLinePosChangeLive;
@@ -626,7 +681,7 @@ window.setGatePreset = async function(preset) {
     if (preset === 'right_gate') {
         // Office Glass Doorway Threshold (exact coordinates from testing video)
         // Point 1: top of doorway; Point 2: bottom of doorway
-        gateLine = { x1: 0.48, y1: 0.58, x2: 0.66, y2: 0.77 };
+        gateLine = { x1: 0.605, y1: 0.604, x2: 0.766, y2: 0.767 };
         lineOrientation = 'diagonal';
     } else if (preset === 'center_h') {
         gateLine = { x1: 0.15, y1: 0.55, x2: 0.85, y2: 0.55 };
@@ -1369,16 +1424,18 @@ function renderAttendanceReportTable(records, reportDate) {
         // Out Time column handling
         let outTimeHtml = '';
         if (isOutside) {
+            const outDurationStr = formatOutsideDuration(r.hours_outside, r.out_time);
             outTimeHtml = `
-                <div style="font-family: monospace; color: #fbbf24; font-weight: 700;">🚪 ${r.out_time}</div>
-                <div style="font-size: 0.72rem; color: #f59e0b; font-weight: 600;">(Outside: ${r.hours_outside || 0} hrs)</div>
+                <div style="font-family: monospace; color: #fbbf24; font-weight: 700;">🚪 ${r.out_time || '--:--'}</div>
+                <div style="font-size: 0.74rem; color: #f59e0b; font-weight: 700; margin-top: 2px;">(Outside: ${outDurationStr})</div>
             `;
         } else {
             outTimeHtml = `<span class="status-badge" style="background: rgba(16,185,129,0.18); color: #34d399; font-weight:700;">🟢 Inside Office</span>`;
         }
 
-        // Working hours display
-        const hoursDisplay = (r.status === 'Working') ? `⏳ ${hoursVal} hrs (Ongoing)` : `✓ ${hoursVal} hrs`;
+        // Working hours display with clean minutes & hours
+        const formattedWorkTime = formatWorkingHours(hoursVal);
+        const hoursDisplay = (r.status === 'Working') ? `⏳ ${formattedWorkTime} (Ongoing)` : `✓ ${formattedWorkTime}`;
 
         // Status badge display
         const statusBadge = isOutside ?
@@ -2105,12 +2162,13 @@ const REAL_STAFF_ROSTER = [
         designation: "Accountant",
         face_id: "FC-TXS-002",
         photo_path: "data/staff_photos/staff_FC_TXS_002.jpg",
-        status: "Outside",
+        status: "Working",
         in_time: "09:15:00",
-        out_time: "11:10:45",
+        out_time: null,
+        hours_outside: 0,
         in_count: 2,
-        out_count: 2,
-        live_hours: 1.9
+        out_count: 1,
+        live_hours: 3.2
     },
     {
         id: 12,
@@ -2131,7 +2189,7 @@ const REAL_STAFF_ROSTER = [
 let standaloneStats = {
     total_staff: 4,
     present_today: 4,
-    currently_inside: 3,
+    currently_inside: 4,
     absent_today: 0,
     unknowns_today: 1,
     fps: 30.0,
@@ -2196,6 +2254,9 @@ function initStandaloneRealVideoMode() {
 
     showStandbyOverlayTemporary();
 
+    // Load persisted counting state, gate line, and roster from localStorage (zero resets on refresh!)
+    loadAppStateFromStorage();
+
     // Render 4 real staff members
     renderStandaloneStaff();
     renderStandaloneStats();
@@ -2205,6 +2266,12 @@ function initStandaloneRealVideoMode() {
 
     // Start video AI analysis loop on gate canvas
     startRealVideoVisionLoop();
+
+    // If counting was active before refresh, resume live counting seamlessly
+    const wasActive = localStorage.getItem('aicam_counting_active');
+    if (wasActive === '1' || wasActive === null) {
+        standaloneStartCounting();
+    }
 
     // Work timer ticker (updates live hours every second)
     setInterval(() => {
@@ -2248,10 +2315,27 @@ function standaloneResetCounts() {
     standaloneStats.session_in = 0;
     standaloneStats.session_out = 0;
     standaloneStats.session_unknown = 0;
+    REAL_STAFF_ROSTER.forEach((s, i) => {
+        s.in_count = 1;
+        s.out_count = 0;
+        s.out_time = null;
+        s.status = 'Working';
+        s.hours_outside = 0;
+    });
+    standaloneStats.currently_inside = 4;
+    standaloneEvents = [];
+    standaloneUnknowns = [];
+    localStorage.removeItem('aicam_staff_roster');
+    localStorage.removeItem('aicam_standalone_stats');
+    localStorage.removeItem('aicam_standalone_events');
+    localStorage.removeItem('aicam_standalone_unknowns');
     if (standaloneVideoEl) {
         standaloneVideoEl.currentTime = 0;
     }
     renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+    renderStandaloneUnknowns();
     showNotification('🔄 Session counts reset to 0! Video rewound.', 'info');
 }
 
@@ -2284,6 +2368,52 @@ async function standaloneSetVideoSource(type, path = null) {
             showNotification('Could not access device webcam: ' + e.message, 'error');
         }
     }
+}
+
+
+function saveAppStateToStorage() {
+    try {
+        localStorage.setItem('aicam_counting_active', isStandaloneCounting ? '1' : '0');
+        localStorage.setItem('aicam_staff_roster', JSON.stringify(REAL_STAFF_ROSTER));
+        localStorage.setItem('aicam_standalone_stats', JSON.stringify(standaloneStats));
+        localStorage.setItem('aicam_standalone_events', JSON.stringify(standaloneEvents));
+        localStorage.setItem('aicam_standalone_unknowns', JSON.stringify(standaloneUnknowns));
+        saveGateLineToStorage();
+    } catch(e) {}
+}
+
+function loadAppStateFromStorage() {
+    try {
+        const staff = localStorage.getItem('aicam_staff_roster');
+        if (staff) {
+            const arr = JSON.parse(staff);
+            if (Array.isArray(arr) && arr.length >= 4) {
+                arr.forEach((saved, idx) => {
+                    if (REAL_STAFF_ROSTER[idx]) {
+                        REAL_STAFF_ROSTER[idx].in_count = saved.in_count;
+                        REAL_STAFF_ROSTER[idx].out_count = saved.out_count;
+                        REAL_STAFF_ROSTER[idx].live_hours = saved.live_hours;
+                        REAL_STAFF_ROSTER[idx].in_time = saved.in_time;
+                        REAL_STAFF_ROSTER[idx].out_time = saved.out_time;
+                        REAL_STAFF_ROSTER[idx].status = saved.status;
+                        REAL_STAFF_ROSTER[idx].hours_outside = saved.hours_outside;
+                    }
+                });
+            }
+        }
+        const stats = localStorage.getItem('aicam_standalone_stats');
+        if (stats) Object.assign(standaloneStats, JSON.parse(stats));
+        const evts = localStorage.getItem('aicam_standalone_events');
+        if (evts) {
+            const parsed = JSON.parse(evts);
+            if (Array.isArray(parsed) && parsed.length > 0) standaloneEvents = parsed;
+        }
+        const unks = localStorage.getItem('aicam_standalone_unknowns');
+        if (unks) {
+            const parsed = JSON.parse(unks);
+            if (Array.isArray(parsed) && parsed.length > 0) standaloneUnknowns = parsed;
+        }
+    } catch(e) {}
 }
 
 // ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
@@ -2379,12 +2509,12 @@ function createCrispVisitorAvatar(tr) {
 }
 
 // 5 Real Trackers including all 4 Staff Members + Unknown Visitor
+// Vishal Morya (Accountant) stays Working at his office desk — never sent outside or marked unknown!
 let simulatedTrackers = [
-    { x: 0.62, y: 0.28, vx: 0.0008, vy: 0.0028, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false, dirIntent: 'IN' },
-    { x: 0.70, y: 0.38, vx: -0.0006, vy: 0.0032, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false, dirIntent: 'IN' },
-    { x: 0.55, y: 0.82, vx: 0.0005, vy: -0.0028, person: REAL_STAFF_ROSTER[2], isReg: true, crossed: false, dirIntent: 'OUT' },
-    { x: 0.58, y: 0.86, vx: -0.0007, vy: -0.0030, person: REAL_STAFF_ROSTER[3], isReg: true, crossed: false, dirIntent: 'OUT' },
-    { x: 0.78, y: 0.32, vx: -0.0012, vy: 0.0026, person: { name: 'Unknown Visitor', designation: 'Guest' }, isReg: false, crossed: false, dirIntent: 'IN' }
+    { x: 0.63, y: 0.28, vx: 0.0008, vy: 0.0028, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false, dirIntent: 'IN' },
+    { x: 0.69, y: 0.38, vx: -0.0006, vy: 0.0030, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false, dirIntent: 'IN' },
+    { x: 0.66, y: 0.82, vx: -0.0007, vy: -0.0028, person: REAL_STAFF_ROSTER[3], isReg: true, crossed: false, dirIntent: 'OUT' },
+    { x: 0.76, y: 0.30, vx: -0.0010, vy: 0.0026, person: { name: 'Unknown Visitor', designation: 'Guest / Delivery' }, isReg: false, crossed: false, dirIntent: 'IN' }
 ];
 
 function startRealVideoVisionLoop() {
@@ -2582,6 +2712,7 @@ function triggerStandaloneCrossing(tr, direction = 'IN') {
     renderStandaloneStats();
     renderStandaloneEvents();
     if (currentTab === 'reports') renderStandaloneReports();
+    saveAppStateToStorage();
 }
 
 // ─── Renderers for Standalone Mode ──────────────────────────────────────────
