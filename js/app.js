@@ -226,15 +226,23 @@ function switchTab(tabId) {
 // ─── Gate Line State ─────────────────────────────────────────────────────────
 // Normalized 0.0-1.0 coordinates of the gate line endpoints
 // Default calibrated doorway threshold: (0.605, 0.604) to (0.766, 0.767)
+const DEFAULT_GATE_LINE = { x1: 0.660, y1: 0.470, x2: 0.795, y2: 0.611 };
+
 function loadSavedGateLine() {
     try {
         const s = localStorage.getItem('aicam_gate_line');
         if (s) {
             const p = JSON.parse(s);
-            if (typeof p.x1 === 'number' && typeof p.x2 === 'number') return p;
+            if (typeof p.x1 === 'number' && typeof p.x2 === 'number') {
+                // If it is an old default or invalid, upgrade to calibrated default
+                if (Math.abs(p.x1 - 0.605) < 0.02 || Math.abs(p.x1 - 0.58) < 0.02 || Math.abs(p.x1 - 0.15) < 0.02) {
+                    return DEFAULT_GATE_LINE;
+                }
+                return p;
+            }
         }
     } catch(e) {}
-    return null;
+    return DEFAULT_GATE_LINE;
 }
 
 function saveGateLineToStorage() {
@@ -243,7 +251,7 @@ function saveGateLineToStorage() {
     } catch(e) {}
 }
 
-let gateLine = loadSavedGateLine() || { x1: 0.605, y1: 0.604, x2: 0.766, y2: 0.767 };
+let gateLine = loadSavedGateLine() || DEFAULT_GATE_LINE;
 let lineOrientation = 'horizontal';
 let lineLength = 1.0;   // fraction of full span (0.1–1.0)
 let linePos    = 0.55;  // position along perpendicular axis (0.05–0.95)
@@ -681,7 +689,7 @@ window.setGatePreset = async function(preset) {
     if (preset === 'right_gate') {
         // Office Glass Doorway Threshold (exact coordinates from testing video)
         // Point 1: top of doorway; Point 2: bottom of doorway
-        gateLine = { x1: 0.605, y1: 0.604, x2: 0.766, y2: 0.767 };
+        gateLine = { x1: 0.660, y1: 0.470, x2: 0.795, y2: 0.611 };
         lineOrientation = 'diagonal';
     } else if (preset === 'center_h') {
         gateLine = { x1: 0.15, y1: 0.55, x2: 0.85, y2: 0.55 };
@@ -1684,7 +1692,7 @@ window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
 
     if (modal) {
         modal.style.display = 'flex';
-        document.body.style.overflow = 'hidden';
+        // document.body.style.overflow = 'hidden';
     }
 };
 
@@ -2586,28 +2594,8 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65) {
     };
 
     if (isInside) {
-        standaloneUnknowns.unshift({
-            id: Date.now(),
-            time: timeStr,
-            date: getLocalDateString(),
-            snapshot_url: snapUrl,
-            camera_id: 'Gate Cam 1',
-            status: 'Unreviewed',
-            notes: `Unregistered visitor crossed gate IN`
-        });
-
-        standaloneEvents.unshift({
-            type: 'unknown',
-            title: '⚠️ Gate Crossing IN (Snapshot Saved)',
-            code: 'GATE-IN',
-            badge: 'Gate IN',
-            msg: `Gate entrance crossing recorded at ${timeStr}. Snapshot saved.`,
-            time: timeStr,
-            direction: 'IN',
-            snapshot: snapUrl
-        });
-
-        if (currentTab === 'unknowns') renderStandaloneUnknowns();
+        // Trigger live motion 3-photo burst analysis (max 3 photos per visitor event)
+        captureUnknownBurstSequence('IN', posX, posY);
     } else {
         standaloneEvents.unshift({
             type: 'registered',
@@ -2868,7 +2856,7 @@ window.openHikConnectModal = function() {
     }
     if (modal) {
         modal.style.display = 'flex';
-        document.body.style.overflow = 'hidden';
+        // document.body.style.overflow = 'hidden';
     }
 };
 
@@ -2893,29 +2881,59 @@ window.setHikPreset = function(type) {
 };
 
 window.connectHikvisionStream = async function() {
-    const input = document.getElementById('hikvisionRtspUrl');
-    const url = input ? input.value.trim() : '';
+    const rawInput = document.getElementById('hikvisionRtspUrl');
+    const ipInput = document.getElementById('hikIp');
+    const userInput = document.getElementById('hikUser');
+    const passInput = document.getElementById('hikPass');
+    const chSelect = document.getElementById('hikChannel');
+
+    let url = '';
+    if (rawInput && rawInput.value.trim().startsWith('rtsp://')) {
+        url = rawInput.value.trim();
+    } else {
+        const ip = (ipInput && ipInput.value.trim()) ? ipInput.value.trim() : '192.168.1.130';
+        const user = (userInput && userInput.value.trim()) ? userInput.value.trim() : 'admin';
+        const pass = (passInput && passInput.value.trim()) ? passInput.value.trim() : 'admin12345';
+        const ch = chSelect ? chSelect.value : '102';
+        url = `rtsp://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${ip}:554/Streaming/Channels/${ch}`;
+    }
+
     if (!url) {
-        showNotification('Please enter a valid Hikvision RTSP or Stream URL', 'error');
+        showNotification('Please enter camera IP and password', 'error');
         return;
     }
     localStorage.setItem('aicam_hikvision_url', url);
     closeHikConnectModal();
 
-    if (backendAvailable && !isGitHubPages) {
+    showNotification('⏳ Connecting to Hikvision Camera at ' + url + '...', 'info');
+
+    // Send to backend (cloud connected or local)
+    if (cloudBackendUrl || backendAvailable) {
         try {
             const fd = new FormData();
             fd.append('source_type', 'rtsp');
             fd.append('source_path', url);
             const res = await fetch(getApiUrl('/api/video/set_source'), { method: 'POST', body: fd });
             const data = await res.json();
-            showNotification('Connected to Hikvision Camera Stream via local backend!', 'success');
+            showNotification('✅ Live Hikvision Camera Connected! Streaming live office feed.', 'success');
             reloadCameraStream();
             return;
         } catch (e) {
-            console.warn('Backend connect failed:', e);
+            console.error('Backend connection failed:', e);
+            showNotification('⚠️ Backend failed to connect to RTSP: ' + e.message, 'error');
         }
+    } else {
+        showNotification('📡 Hikvision RTSP configured. Connect your cloud backend or run local server to stream.', 'info');
     }
+};
 
-    showNotification('📡 Hikvision Stream configured: ' + url + '. Run local backend (python backend/app.py) for real-time RTSP decoding.', 'info');
+window.updateHikPreviewUrl = function() {
+    const ip = (document.getElementById('hikIp') ? document.getElementById('hikIp').value.trim() : '') || '192.168.1.130';
+    const user = (document.getElementById('hikUser') ? document.getElementById('hikUser').value.trim() : '') || 'admin';
+    const pass = (document.getElementById('hikPass') ? document.getElementById('hikPass').value.trim() : '') || 'admin12345';
+    const ch = (document.getElementById('hikChannel') ? document.getElementById('hikChannel').value : '102');
+    const input = document.getElementById('hikvisionRtspUrl');
+    if (input) {
+        input.value = `rtsp://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${ip}:554/Streaming/Channels/${ch}`;
+    }
 };
