@@ -223,6 +223,13 @@ class FaceRecognitionEngine:
             new_w, new_h = int(pw * scale), int(ph * scale)
             save_img = cv2.resize(save_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
+        # Apply subtle unsharp masking for crystal-clear facial contours (eliminates camera softness and blur)
+        try:
+            gaussian = cv2.GaussianBlur(save_img, (0, 0), 2.0)
+            save_img = cv2.addWeighted(save_img, 1.3, gaussian, -0.3, 0)
+        except Exception:
+            pass
+
         portrait_url = None
         try:
             cv2.imwrite(str(snap_path), save_img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])

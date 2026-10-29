@@ -162,6 +162,7 @@
                    autoplay
                    muted
                    loop
+                   crossorigin="anonymous"
                    style="display: none; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;">
             </video>
 
@@ -308,7 +309,8 @@
             AI Camera detects and identifies each worker automatically when they enter or leave through the gate.
           </p>
         </div>
-        <div style="display: flex; gap: 0.6rem;">
+        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+          <input type="text" id="staffSearchInput" class="form-control" placeholder="Search staff name or code..." style="padding: 0.45rem 0.75rem; width: 220px;" />
           <button id="btnClearTestData" class="btn btn-secondary" style="border-color: rgba(244, 63, 94, 0.4); color: #fb7185;">
             <span>🧹</span> Clear Raw/Test Data
           </button>
@@ -326,17 +328,29 @@
     <!-- PANE 3: Daily Working Hours & Reports -->
     <div id="pane-reports" class="tab-content-pane" style="display: none;">
       <div class="card-header no-print" style="border-radius: 12px; margin-bottom: 1rem;">
-        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
           <label style="font-size: 0.85rem; font-weight: 600; color: #cbd5e1;">Select Date:</label>
           <input type="date" id="reportDatePicker" class="form-control" style="padding: 0.4rem 0.75rem;" />
-          <button id="btnFilterReport" class="btn btn-primary">Filter Date</button>
+          <button id="btnFilterReport" class="btn btn-primary" style="padding: 0.4rem 0.85rem;">Filter Date</button>
           
-          <input type="text" id="reportSearchInput" class="form-control" placeholder="Search by name or designation..." style="width: 250px; padding: 0.4rem 0.75rem;" />
+          <input type="text" id="reportSearchInput" class="form-control" placeholder="Search by name, designation, code..." style="width: 240px; padding: 0.4rem 0.75rem;" />
+
+          <select id="reportStatusFilter" class="form-control" style="padding: 0.4rem 0.75rem; width: 140px;">
+            <option value="ALL">All Status</option>
+            <option value="Working">🟢 Working</option>
+            <option value="Outside">🚪 Outside Gate</option>
+            <option value="Completed">✓ Completed</option>
+          </select>
         </div>
 
-        <button id="btnPrintReport" class="btn btn-emerald" style="padding: 0.55rem 1.1rem;">
-          <span>🖨️</span> Print Official Attendance Sheet
-        </button>
+        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+          <button id="btnExportReportCSV" class="btn btn-secondary" style="padding: 0.55rem 0.95rem;">
+            <span>📥</span> Export CSV
+          </button>
+          <button id="btnPrintReport" class="btn btn-emerald" style="padding: 0.55rem 1.1rem;">
+            <span>🖨️</span> Print Official Attendance Sheet
+          </button>
+        </div>
       </div>
 
       <div class="table-container">
@@ -685,6 +699,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=5.1"></script>
+  <script src="./js/app.js?v=5.2"></script>
 </body>
 </html>

@@ -1,3 +1,11 @@
+function getLocalDateString() {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 
 let showLabelsUntil = Date.now() + 2500; // show labels for 2.5s initially, then auto-fade
 let standbyOverlayTimer = null;
@@ -1164,6 +1172,11 @@ async function loadStaffList() {
     const container = document.getElementById('staffGridContainer');
     if (!container) return;
 
+    if (isGitHubPages || !backendAvailable) {
+        renderStandaloneStaff();
+        return;
+    }
+
     try {
         const res = await fetch('/api/staff');
         const staffList = await res.json();
@@ -1260,7 +1273,7 @@ function initReports() {
     const searchInput = document.getElementById('reportSearchInput');
 
     if (dateInput) {
-        dateInput.value = new Date().toISOString().split('T')[0];
+        dateInput.value = getLocalDateString();
     }
 
     if (btnFilter) {
@@ -1302,15 +1315,24 @@ async function fetchTodayReportAuto() {
 }
 
 async function fetchTodayReport(customDate = null) {
-    const url = customDate ? `/api/attendance/report?date=${customDate}` : '/api/attendance/today';
+    const dateInput = document.getElementById('reportDatePicker');
+    const reportDate = customDate || (dateInput && dateInput.value ? dateInput.value : getLocalDateString());
+
+    if (isGitHubPages || !backendAvailable) {
+        renderStandaloneReports(reportDate);
+        return;
+    }
+
+    const url = customDate ? `/api/attendance/report?date=${encodeURIComponent(customDate)}` : '/api/attendance/today';
     try {
         const res = await fetch(url);
         const data = await res.json();
         const records = data.records || [];
         lastReportSig = JSON.stringify(records.map(r => `${r.id}-${r.in_count}-${r.out_count}-${r.status}-${r.live_hours || r.total_hours}`));
-        renderAttendanceReportTable(records, data.date);
+        renderAttendanceReportTable(records, data.date || reportDate);
     } catch (e) {
-        console.error('Failed to load report:', e);
+        console.error('Failed to load backend report, showing local records:', e);
+        renderStandaloneReports(reportDate);
     }
 }
 
@@ -1377,7 +1399,7 @@ function renderAttendanceReportTable(records, reportDate) {
             `<span class="status-badge ${statusClass}">${r.status}</span>`;
 
         html += `
-            <tr data-name="${escapeHtml(r.name).toLowerCase()}" data-desig="${escapeHtml(r.designation).toLowerCase()}">
+            <tr data-name="${escapeHtml(r.name || '').toLowerCase()}" data-desig="${escapeHtml(r.designation || '').toLowerCase()}" data-code="${escapeHtml(r.staff_code || '').toLowerCase()}" data-status="${r.status || 'Working'}">
                 <td style="font-weight: 600; color: var(--text-muted);">${idx + 1}</td>
                 <td>
                     <img src="${photo}" class="staff-thumb" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'38\\' height=\\'38\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%231e293b\\'/><text x=\\'50%\\' y=\\'55%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' fill=\\'%2394a3b8\\' font-size=\\'14\\'>👤</text></svg>'">
@@ -1395,19 +1417,89 @@ function renderAttendanceReportTable(records, reportDate) {
         `;
     });
     tableBody.innerHTML = html;
+    applyReportFilters();
 }
 
-function filterReportTable(query) {
+function applyReportFilters() {
+    const searchInput = document.getElementById('reportSearchInput');
+    const statusSelect = document.getElementById('reportStatusFilter');
+    const query = (searchInput ? searchInput.value : '').toLowerCase().trim();
+    const statusVal = statusSelect ? statusSelect.value : 'ALL';
+
     const rows = document.querySelectorAll('#attendanceTableBody tr');
     rows.forEach(row => {
         const name = row.getAttribute('data-name') || '';
         const desig = row.getAttribute('data-desig') || '';
-        if (name.includes(query) || desig.includes(query)) {
+        const code = row.getAttribute('data-code') || '';
+        const status = row.getAttribute('data-status') || '';
+
+        const matchesQuery = !query || name.includes(query) || desig.includes(query) || code.includes(query);
+        const matchesStatus = (statusVal === 'ALL') || (status === statusVal) || (statusVal === 'Outside' && status === 'Outside');
+
+        if (matchesQuery && matchesStatus) {
             row.style.display = '';
         } else {
             row.style.display = 'none';
         }
     });
+}
+
+function filterReportTable(query) {
+    applyReportFilters();
+}
+
+function exportReportToCSV() {
+    const rows = document.querySelectorAll('#attendanceTableBody tr');
+    if (!rows || rows.length === 0) {
+        showNotification('No attendance records to export.', 'warning');
+        return;
+    }
+
+    const dateInput = document.getElementById('reportDatePicker');
+    const dateStr = dateInput && dateInput.value ? dateInput.value : getLocalDateString();
+
+    let csv = '#,Staff Code,Name,Designation,Date,Gate IN Count,Gate OUT Count,In Time,Out Time,Total Working Hours,Status\n';
+    let count = 0;
+
+    rows.forEach((row, idx) => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length < 11) return; // placeholder row
+        count++;
+        const num = cells[0].textContent.trim();
+        const code = cells[2].textContent.trim();
+        const name = `"${cells[3].textContent.trim().replace(/"/g, '""')}"`;
+        const desig = `"${cells[4].textContent.trim().replace(/"/g, '""')}"`;
+        const dt = cells[5].textContent.trim();
+        
+        // Parse counts
+        const countText = cells[6].textContent.trim();
+        const inMatch = countText.match(/IN:\s*(\d+)x/i);
+        const outMatch = countText.match(/OUT:\s*(\d+)x/i);
+        const inCnt = inMatch ? inMatch[1] : '0';
+        const outCnt = outMatch ? outMatch[1] : '0';
+
+        const inTime = cells[7].textContent.trim();
+        const outTime = cells[8].textContent.replace(/\s+/g, ' ').trim();
+        const hours = cells[9].textContent.replace(/[⏳✓]/g, '').trim();
+        const status = cells[10].textContent.trim();
+
+        csv += `${num},${code},${name},${desig},${dt},${inCnt},${outCnt},${inTime},"${outTime}","${hours}","${status}"\n`;
+    });
+
+    if (count === 0) {
+        showNotification('No records match current filter for export.', 'warning');
+        return;
+    }
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Attendance_Report_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showNotification(`📥 Exported Attendance_Report_${dateStr}.csv successfully!`, 'success');
 }
 
 // ----------------- Unknown Visitors Log (Date Folders & Deletion) -----------------
@@ -1418,7 +1510,7 @@ function initUnknowns() {
     const btnClearAll = document.getElementById('btnDeleteAllUnknownsTotal');
 
     if (datePicker && !datePicker.value) {
-        datePicker.value = new Date().toISOString().split('T')[0];
+        datePicker.value = getLocalDateString();
     }
     if (btnFilter) {
         btnFilter.addEventListener('click', () => window.filterUnknownsByDate());
@@ -1457,6 +1549,12 @@ async function loadUnknownsAuto() {
 async function loadUnknowns(filterDate = null, force = false) {
     const datePicker = document.getElementById('unknownDatePicker');
     const targetDate = filterDate || (datePicker && datePicker.value ? datePicker.value.trim() : null);
+
+    if (isGitHubPages || !backendAvailable) {
+        renderStandaloneUnknowns(targetDate);
+        return;
+    }
+
     const url = targetDate ? `/api/unknowns?date=${encodeURIComponent(targetDate)}` : '/api/unknowns';
 
     try {
@@ -1468,7 +1566,7 @@ async function loadUnknowns(filterDate = null, force = false) {
             renderUnknownsGallery(list, targetDate);
         }
     } catch (e) {
-        showNotification('Failed to load unknown snapshots', 'error');
+        renderStandaloneUnknowns(targetDate);
     }
 }
 
@@ -1701,6 +1799,19 @@ function registerFromUnknown(snapshotUrl) {
     showNotification('Pre-filled unknown person face snapshot. Enter Name and Designation to complete registration.', 'info');
 }
 
+
+const STANDALONE_MODULE2_RECORDS = [
+    { id: 1, challan_no: 'CH-8801', party_name: 'Shree Radhe Textiles', delivery_boy: 'Ramesh Patel', product_type: 'Silk Sarees (Bunch)', expected_qty: 120, counted_qty: 120, difference: 0, status: 'Verified' },
+    { id: 2, challan_no: 'CH-8802', party_name: 'Surat Saree Hub', delivery_boy: 'Karan Dave', product_type: 'Jacquard Taka Rolls', expected_qty: 50, counted_qty: 52, difference: 2, status: 'Mismatched' },
+    { id: 3, challan_no: 'CH-8803', party_name: 'Gujarat Poly Fabrics', delivery_boy: 'Sanjay Varma', product_type: 'Cotton Grey Taka', expected_qty: 80, counted_qty: 80, difference: 0, status: 'Verified' }
+];
+
+const STANDALONE_MODULE3_RECORDS = [
+    { id: 1, timestamp: '11:15:20', material_type: 'Yarn Carton Box (48 Cones)', direction: 'IN', batch_count: 24, lock_token: 'LOCKED-AI-991' },
+    { id: 2, timestamp: '10:45:00', material_type: 'Rapier Bimp Beam Roll', direction: 'IN', batch_count: 6, lock_token: 'LOCKED-AI-842' },
+    { id: 3, timestamp: '09:20:10', material_type: 'Yarn Carton Box (48 Cones)', direction: 'OUT', batch_count: 12, lock_token: 'LOCKED-AI-731' }
+];
+
 // ----------------- Module 2: Sarees & Taka Bunch Counter -----------------
 function initModule2() {
     const form = document.getElementById('sareeTakaForm');
@@ -1737,9 +1848,41 @@ function initModule2() {
     }
 }
 
+function renderModule2Rows(list) {
+    const body = document.getElementById('module2TableBody');
+    if (!body) return;
+    let html = '';
+    list.forEach((r, i) => {
+        const diff = r.difference;
+        const diffBadge = diff === 0 ? '<span style="color: #34d399; font-weight: 700;">✓ 0 (Exact)</span>' :
+                          (diff > 0 ? `<span style="color: #38bdf8; font-weight: 700;">+${diff} (Extra)</span>` :
+                          `<span style="color: #f87171; font-weight: 700;">${diff} (Short)</span>`);
+
+        html += `
+            <tr>
+                <td>${i + 1}</td>
+                <td style="font-family: monospace; font-weight: 700; color: #38bdf8;">${escapeHtml(r.challan_no)}</td>
+                <td style="font-weight: 700; color: #fff;">${escapeHtml(r.party_name)}</td>
+                <td>${escapeHtml(r.delivery_boy)}</td>
+                <td style="color: #cbd5e1;">${escapeHtml(r.product_type)}</td>
+                <td style="font-family: monospace;">${r.expected_qty}</td>
+                <td style="font-family: monospace; font-weight: 700; color: #34d399;">${r.counted_qty}</td>
+                <td>${diffBadge}</td>
+                <td><span class="status-badge ${diff === 0 ? 'badge-completed' : 'badge-half'}">${r.status}</span></td>
+            </tr>
+        `;
+    });
+    body.innerHTML = html;
+}
+
 async function loadModule2Records() {
     const body = document.getElementById('module2TableBody');
     if (!body) return;
+
+    if (isGitHubPages || !backendAvailable) {
+        renderModule2Rows(STANDALONE_MODULE2_RECORDS);
+        return;
+    }
 
     try {
         const res = await fetch('/api/module2/records');
@@ -1814,9 +1957,36 @@ async function logInventory(material, direction) {
     }
 }
 
+function renderModule3Rows(list) {
+    const body = document.getElementById('module3TableBody');
+    if (!body) return;
+    let html = '';
+    list.forEach((r, i) => {
+        const isIN = r.direction === 'IN';
+        html += `
+            <tr>
+                <td>${i + 1}</td>
+                <td style="font-family: monospace; color: var(--text-muted);">${r.timestamp}</td>
+                <td style="font-weight: 700; color: #fff;">${escapeHtml(r.material_type)}</td>
+                <td>
+                    <span class="status-badge ${isIN ? 'badge-completed' : 'badge-half'}">${r.direction}</span>
+                </td>
+                <td style="font-family: monospace; font-weight: 700; color: var(--accent-cyan);">+${r.batch_count}</td>
+                <td style="font-family: monospace; font-size: 0.72rem; color: #64748b;">${escapeHtml(r.lock_token || 'LOCKED')}</td>
+            </tr>
+        `;
+    });
+    body.innerHTML = html;
+}
+
 async function loadModule3Records() {
     const body = document.getElementById('module3TableBody');
     if (!body) return;
+
+    if (isGitHubPages || !backendAvailable) {
+        renderModule3Rows(STANDALONE_MODULE3_RECORDS);
+        return;
+    }
 
     try {
         const res = await fetch('/api/module3/records');
@@ -1996,7 +2166,7 @@ let standaloneUnknowns = [
     {
         id: 1,
         time: '10:42:30',
-        date: new Date().toISOString().split('T')[0],
+        date: getLocalDateString(),
         snapshot_url: 'data/staff_photos/staff_FC_TXS_002.jpg',
         camera_id: 'Gate Cam 1',
         status: 'Unreviewed',
@@ -2130,10 +2300,104 @@ async function standaloneSetVideoSource(type, path = null) {
 }
 
 // ─── Real Video Vision & AI Tracking Loop ───────────────────────────────────
+// High-Definition Visitor Snapshot Capture directly from live video frame
+function captureVisitorSnapshot(tr) {
+    try {
+        const video = standaloneVideoEl || document.getElementById('html5VideoPlayer');
+        if (!video || !video.videoWidth || video.readyState < 2) {
+            return createCrispVisitorAvatar(tr);
+        }
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+
+        // Crop tightly around the person's upper body / face
+        const cropW_norm = 0.16;
+        const cropH_norm = 0.28;
+
+        let sx = Math.floor((tr.x - cropW_norm / 2) * vw);
+        let sy = Math.floor((tr.y - cropH_norm / 2) * vh);
+        let sw = Math.floor(cropW_norm * vw);
+        let sh = Math.floor(cropH_norm * vh);
+
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (sx + sw > vw) sw = vw - sx;
+        if (sy + sh > vh) sh = vh - sy;
+
+        if (sw <= 10 || sh <= 10) {
+            return createCrispVisitorAvatar(tr);
+        }
+
+        const targetW = 360;
+        const targetH = 440;
+        const offscreen = document.createElement('canvas');
+        offscreen.width = targetW;
+        offscreen.height = targetH;
+        const ctx = offscreen.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        // Draw cropped person from the exact live video frame
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
+
+        // Add sleek high-tech security HUD stamp at the bottom
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.fillRect(0, targetH - 36, targetW, 36);
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText('⚠️ UNREGISTERED FACE', 10, targetH - 18);
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = '11px monospace';
+        const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
+        ctx.fillText(`${nowTime} • GATE 01`, targetW - 130, targetH - 18);
+
+        return offscreen.toDataURL('image/jpeg', 0.95);
+    } catch (e) {
+        console.warn('Video frame capture tainted or unavailable, using HD vector badge:', e);
+        return createCrispVisitorAvatar(tr);
+    }
+}
+
+function createCrispVisitorAvatar(tr) {
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="440" viewBox="0 0 360 440">
+        <defs>
+            <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#0f172a"/>
+                <stop offset="100%" stop-color="#1e293b"/>
+            </linearGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#bgGrad)"/>
+        <!-- Scanner HUD Reticle -->
+        <circle cx="180" cy="175" r="120" fill="none" stroke="rgba(245,158,11,0.2)" stroke-width="1.5"/>
+        <circle cx="180" cy="175" r="80" fill="none" stroke="rgba(245,158,11,0.35)" stroke-width="1.5" stroke-dasharray="8 6"/>
+        <!-- Reticle Corners -->
+        <path d="M 50 85 L 50 45 L 85 45" fill="none" stroke="#f59e0b" stroke-width="3"/>
+        <path d="M 275 45 L 310 45 L 310 85" fill="none" stroke="#f59e0b" stroke-width="3"/>
+        <path d="M 50 305 L 50 345 L 85 345" fill="none" stroke="#f59e0b" stroke-width="3"/>
+        <path d="M 275 345 L 310 345 L 310 305" fill="none" stroke="#f59e0b" stroke-width="3"/>
+        <!-- Silhouette -->
+        <circle cx="180" cy="145" r="50" fill="#334155" stroke="#f59e0b" stroke-width="2"/>
+        <path d="M 90 310 C 90 225, 270 225, 270 310 Z" fill="#334155" stroke="#f59e0b" stroke-width="2"/>
+        <!-- Badge Banner -->
+        <rect x="60" y="318" width="240" height="26" rx="4" fill="rgba(245,158,11,0.25)" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="180" y="335" fill="#fbbf24" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle">⚠️ UNREGISTERED VISITOR</text>
+        <!-- Footer -->
+        <rect y="400" width="360" height="40" fill="#090d16"/>
+        <text x="16" y="425" fill="#38bdf8" font-family="monospace" font-size="11" font-weight="bold">AI CAM 01 • GATE IN</text>
+        <text x="344" y="425" fill="#94a3b8" font-family="monospace" font-size="11" text-anchor="end">${timeStr}</text>
+    </svg>`;
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+
+// 5 Real Trackers including all 4 Staff Members + Unknown Visitor
 let simulatedTrackers = [
-    { x: 0.65, y: 0.28, vx: 0.001, vy: 0.003, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false },
-    { x: 0.72, y: 0.40, vx: -0.001, vy: 0.0035, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false },
-    { x: 0.82, y: 0.35, vx: -0.0015, vy: 0.0028, person: { name: 'Unknown Visitor', designation: 'Guest' }, isReg: false, crossed: false }
+    { x: 0.62, y: 0.28, vx: 0.0008, vy: 0.0028, person: REAL_STAFF_ROSTER[0], isReg: true, crossed: false, dirIntent: 'IN' },
+    { x: 0.70, y: 0.38, vx: -0.0006, vy: 0.0032, person: REAL_STAFF_ROSTER[1], isReg: true, crossed: false, dirIntent: 'IN' },
+    { x: 0.55, y: 0.82, vx: 0.0005, vy: -0.0028, person: REAL_STAFF_ROSTER[2], isReg: true, crossed: false, dirIntent: 'OUT' },
+    { x: 0.58, y: 0.86, vx: -0.0007, vy: -0.0030, person: REAL_STAFF_ROSTER[3], isReg: true, crossed: false, dirIntent: 'OUT' },
+    { x: 0.78, y: 0.32, vx: -0.0012, vy: 0.0026, person: { name: 'Unknown Visitor', designation: 'Guest' }, isReg: false, crossed: false, dirIntent: 'IN' }
 ];
 
 function startRealVideoVisionLoop() {
@@ -2158,17 +2422,55 @@ function startRealVideoVisionLoop() {
             const ctx = canvas.getContext('2d');
             const W = canvas.width, H = canvas.height;
 
+            // Gate line normal vector
+            const dx = gateLine.x2 - gateLine.x1;
+            const dy = gateLine.y2 - gateLine.y1;
+            const len = Math.max(0.001, Math.hypot(dx, dy));
+            const nx = -dy / len;
+            const ny = dx / len;
+
             simulatedTrackers.forEach(tr => {
+                const prevX = tr.x;
+                const prevY = tr.y;
+
                 tr.x += tr.vx;
                 tr.y += tr.vy;
 
-                // Loop within gate walkway area (testing video gate corridor)
-                if (tr.y > 0.85) {
-                    tr.y = 0.22;
-                    tr.x = 0.60 + Math.random() * 0.25;
+                // Reversal boundaries: turn around at top (outside doorway) and bottom (inside office floor)
+                if (tr.y > 0.88 && tr.vy > 0) {
+                    // Reached inside office floor -> turn around to walk back OUT
+                    tr.vy = -Math.abs(tr.vy);
                     tr.crossed = false;
+                    tr.dirIntent = 'OUT';
+                } else if (tr.y < 0.22 && tr.vy < 0) {
+                    // Reached outside door -> turn around to walk back IN
+                    tr.vy = Math.abs(tr.vy);
+                    tr.x = 0.58 + Math.random() * 0.22;
+                    tr.crossed = false;
+                    tr.dirIntent = 'IN';
                 }
 
+                // Check gate line crossing using 2D cross product sign change
+                if (!tr.crossed) {
+                    const sidePrev = (gateLine.x2 - gateLine.x1) * (prevY - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (prevX - gateLine.x1);
+                    const sideCurr = (gateLine.x2 - gateLine.x1) * (tr.y - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (tr.x - gateLine.x1);
+
+                    // Cross product sign change signifies crossing the infinite line
+                    if ((sidePrev <= 0 && sideCurr > 0) || (sidePrev >= 0 && sideCurr < 0)) {
+                        // Check if within gate line Y span
+                        const minY = Math.min(gateLine.y1, gateLine.y2) - 0.08;
+                        const maxY = Math.max(gateLine.y1, gateLine.y2) + 0.08;
+                        if (tr.y >= minY && tr.y <= maxY) {
+                            tr.crossed = true;
+                            // Determine direction: velocity vector projected on inside normal
+                            const dot = tr.vx * nx + tr.vy * ny;
+                            const crossingDir = (dot >= 0) ? 'IN' : 'OUT';
+                            triggerStandaloneCrossing(tr, crossingDir);
+                        }
+                    }
+                }
+
+                // Draw high-tech AI detection box
                 const px = tr.x * W;
                 const py = tr.y * H;
                 const bw = Math.max(50, W * 0.09);
@@ -2176,16 +2478,6 @@ function startRealVideoVisionLoop() {
                 const bx1 = px - bw / 2;
                 const by1 = py - bh / 2;
 
-                // Check gate line crossing using 2D cross product
-                if (!tr.crossed) {
-                    const side = (gateLine.x2 - gateLine.x1) * (tr.y - gateLine.y1) - (gateLine.y2 - gateLine.y1) * (tr.x - gateLine.x1);
-                    if (side > 0 && tr.y > Math.min(gateLine.y1, gateLine.y2)) {
-                        tr.crossed = true;
-                        triggerStandaloneCrossing(tr);
-                    }
-                }
-
-                // Draw high-tech AI detection box
                 ctx.save();
                 const color = tr.isReg ? '#10b981' : '#f59e0b';
                 ctx.strokeStyle = color;
@@ -2226,49 +2518,72 @@ function startRealVideoVisionLoop() {
     requestAnimationFrame(frame);
 }
 
-function triggerStandaloneCrossing(tr) {
+function triggerStandaloneCrossing(tr, direction = 'IN') {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isStaff = tr.isReg;
 
     if (isStaff) {
-        standaloneStats.session_in++;
-        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
-        tr.person.status = 'Working';
-        tr.person.in_count++;
+        if (direction === 'IN') {
+            standaloneStats.session_in++;
+            standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+            tr.person.status = 'Working';
+            tr.person.in_count = (tr.person.in_count || 0) + 1;
+            if (!tr.person.in_time) tr.person.in_time = timeStr;
 
-        standaloneEvents.unshift({
-            type: 'registered',
-            title: `${tr.person.name} (${tr.person.designation})`,
-            code: tr.person.staff_code,
-            badge: 'Gate IN',
-            msg: `Verified Face ID. Checked IN at ${timeStr}. Work timer active.`,
-            time: timeStr,
-            direction: 'IN'
-        });
+            standaloneEvents.unshift({
+                type: 'registered',
+                title: `${tr.person.name} (${tr.person.designation})`,
+                code: tr.person.staff_code,
+                badge: 'Gate IN',
+                msg: `Verified Face ID. Checked IN at ${timeStr}. Work timer active.`,
+                time: timeStr,
+                direction: 'IN'
+            });
+        } else {
+            standaloneStats.session_out++;
+            standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
+            tr.person.status = 'Outside';
+            tr.person.out_count = (tr.person.out_count || 0) + 1;
+            tr.person.out_time = timeStr;
+
+            standaloneEvents.unshift({
+                type: 'registered',
+                title: `${tr.person.name} (${tr.person.designation})`,
+                code: tr.person.staff_code,
+                badge: 'Gate OUT',
+                msg: `Checked OUT at ${timeStr}. Gate exit recorded.`,
+                time: timeStr,
+                direction: 'OUT'
+            });
+        }
     } else {
-        standaloneStats.session_unknown++;
-        standaloneStats.unknowns_today++;
+        // Unknown visitor
+        if (direction === 'IN') {
+            standaloneStats.session_unknown++;
+            standaloneStats.unknowns_today++;
+        }
 
-        // Add real unknown visitor record
-        const snapUrl = 'data/staff_photos/staff_FC_TXS_002.jpg';
+        // Capture crisp crystal-clear HD snapshot
+        const snapUrl = captureVisitorSnapshot(tr);
+
         standaloneUnknowns.unshift({
-            id: standaloneUnknowns.length + 1,
+            id: Date.now(),
             time: timeStr,
-            date: new Date().toISOString().split('T')[0],
+            date: getLocalDateString(),
             snapshot_url: snapUrl,
             camera_id: 'Gate Cam 1',
             status: 'Unreviewed',
-            notes: 'Unregistered visitor crossed gate entrance'
+            notes: `Unregistered visitor crossed gate ${direction}`
         });
 
         standaloneEvents.unshift({
             type: 'unknown',
             title: '⚠️ Unknown Visitor Detected',
             code: 'UNREG-FACE',
-            badge: 'ALERT',
+            badge: `Gate ${direction}`,
             msg: `Unregistered face crossed gate at ${timeStr}. High-Res snapshot captured.`,
             time: timeStr,
-            direction: 'IN',
+            direction: direction,
             snapshot: snapUrl
         });
 
@@ -2377,59 +2692,51 @@ function renderStandaloneEvents() {
     container.innerHTML = html;
 }
 
-function renderStandaloneReports() {
-    const tbody = document.getElementById('attendanceTableBody');
-    if (!tbody) return;
+// 11-column perfectly aligned Daily Attendance & Working Hours Reports
+function renderStandaloneReports(selectedDate = null) {
+    const reportDate = selectedDate || (document.getElementById('reportDatePicker') ? document.getElementById('reportDatePicker').value : null) || getLocalDateString();
 
-    let html = '';
-    REAL_STAFF_ROSTER.forEach((s, idx) => {
-        const isWork = s.status === 'Working';
-        html += `
-            <tr>
-                <td>${idx + 1}</td>
-                <td><img src="${s.photo_path}" style="width: 38px; height: 38px; border-radius: 8px; object-fit: cover;" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'"></td>
-                <td><strong>${escapeHtml(s.name)}</strong></td>
-                <td><span style="color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</span></td>
-                <td><code style="color: var(--text-muted);">${s.staff_code}</code></td>
-                <td><span style="color: #34d399; font-family: monospace;">${s.in_time || '--:--'}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace;">${s.out_time || '--:--'}</span></td>
-                <td>
-                    <span style="color: #38bdf8; font-weight: 700; font-family: monospace;">${s.live_hours} hrs</span>
-                </td>
-                <td>
-                    <span class="status-badge badge-working" style="padding: 2px 6px; font-size: 0.72rem;">${s.in_count} IN</span>
-                    <span class="status-badge badge-overtime" style="padding: 2px 6px; font-size: 0.72rem;">${s.out_count} OUT</span>
-                </td>
-                <td>
-                    <span class="status-badge ${isWork ? 'badge-working' : 'badge-completed'}">${s.status}</span>
-                </td>
-            </tr>
-        `;
-    });
-    tbody.innerHTML = html;
+    const records = REAL_STAFF_ROSTER.map(s => ({
+        id: s.id,
+        staff_code: s.staff_code,
+        name: s.name,
+        designation: s.designation,
+        photo_path: s.photo_path,
+        status: s.status,
+        date: reportDate,
+        in_time: s.in_time || '08:30:15',
+        out_time: s.out_time,
+        hours_outside: s.hours_outside || 0.0,
+        live_hours: s.live_hours || 0.0,
+        total_hours: s.live_hours || 0.0,
+        in_count: s.in_count || 1,
+        out_count: s.out_count || 0
+    }));
+
+    renderAttendanceReportTable(records, reportDate);
 }
 
-function renderStandaloneUnknowns() {
-    const container = document.getElementById('unknownsGridContainer');
-    if (!container) return;
+function renderStandaloneUnknowns(filterDate = null) {
+    const targetDate = filterDate || (document.getElementById('unknownDatePicker') ? document.getElementById('unknownDatePicker').value : null) || getLocalDateString();
+    
+    // Filter by date if specified
+    const filtered = standaloneUnknowns.filter(u => !targetDate || u.date === targetDate);
 
-    let html = '';
-    standaloneUnknowns.forEach(u => {
-        html += `
-            <div class="snapshot-card">
-                <div class="snapshot-img-box" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">
-                    <img src="${u.snapshot_url}" alt="Unknown Visitor" style="width: 100%; height: 180px; object-fit: cover;">
-                    <span class="snapshot-time-badge">${u.time}</span>
-                </div>
-                <div class="snapshot-footer">
-                    <div style="font-size: 0.8rem; font-weight: 700; color: #f59e0b;">⚠️ Unregistered Face</div>
-                    <div style="font-size: 0.72rem; color: #94a3b8;">${u.camera_id} &bull; ${u.date}</div>
-                    <div style="margin-top: 0.45rem; display: flex; gap: 0.4rem;">
-                        <button class="btn btn-primary" style="padding: 0.25rem 0.55rem; font-size: 0.72rem;" onclick="openFullscreenLightbox('${u.snapshot_url}', '${u.time}', '${u.camera_id}')">Inspect</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    container.innerHTML = html;
+    const list = filtered.map(u => ({
+        id: u.id,
+        timestamp: `${u.date} ${u.time}`,
+        date: u.date,
+        snapshot_path: u.snapshot_url,
+        full_path: u.full_url || u.snapshot_url,
+        camera_id: u.camera_id || 'Gate Cam 1'
+    }));
+
+    renderUnknownsGallery(list, targetDate);
+
+    // Update count badge on tab
+    const badge = document.getElementById('unknownsCountBadge');
+    if (badge) {
+        badge.textContent = standaloneUnknowns.length;
+        badge.style.display = standaloneUnknowns.length > 0 ? 'inline-block' : 'none';
+    }
 }
