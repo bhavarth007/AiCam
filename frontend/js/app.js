@@ -48,18 +48,25 @@ function getApiUrl(path) {
     return path;
 }
 
-// Initialization on DOM Load
-document.addEventListener('DOMContentLoaded', () => {
-    initEnvironment();
-    initClock();
-    initTabs();
-    initSourceControls();
-    setupCanvasAutoRedraw();   // ← new: keep gate line canvas always redrawn
-    initStaffRegistration();
-    initReports();
-    initUnknowns();
-    initModule2();
-    initModule3();
+// Robust Application Bootloader (guaranteed to execute even if DOMContentLoaded already fired)
+function bootApp() {
+    console.log('[AiCam] Booting AI Camera control center...');
+    try { initEnvironment(); } catch(e) { console.error('initEnvironment err:', e); }
+    try { initClock(); } catch(e) { console.error('initClock err:', e); }
+    try { initTabs(); } catch(e) { console.error('initTabs err:', e); }
+    try { initSourceControls(); } catch(e) { console.error('initSourceControls err:', e); }
+    try { setupCanvasAutoRedraw(); } catch(e) { console.error('setupCanvasAutoRedraw err:', e); }
+    try { initStaffRegistration(); } catch(e) { console.error('initStaffRegistration err:', e); }
+    try { initReports(); } catch(e) { console.error('initReports err:', e); }
+    try { initUnknowns(); } catch(e) { console.error('initUnknowns err:', e); }
+    try { initModule2(); } catch(e) { console.error('initModule2 err:', e); }
+    try { initModule3(); } catch(e) { console.error('initModule3 err:', e); }
+
+    // On GitHub Pages or static host without cloud tunnel, boot standalone mode instantly (0ms delay)
+    if (isGitHubPages && !cloudBackendUrl) {
+        initStandaloneRealVideoMode();
+        return;
+    }
 
     // Auto-detect whether backend is reachable; if not, use standalone real-video engine
     detectBackend().then(hasBackend => {
@@ -79,23 +86,16 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             initStandaloneRealVideoMode();
         }
+    }).catch(() => {
+        initStandaloneRealVideoMode();
     });
-    if (false) {
-        // Start 0.5s background auto-refresh for all site data (zero manual refresh needed!)
-        fetchStats();
-        fetchRecentEvents();
-        fetchTodayReport();
-        pollInterval = setInterval(() => {
-            fetchStats();
-            fetchRecentEvents();
-            if (currentTab === 'unknowns') {
-                loadUnknownsAuto();
-            } else if (currentTab === 'reports') {
-                fetchTodayReportAuto();
-            }
-        }, 500); // 0.5-second live auto-refresh
-    }
-});
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+    bootApp();
+}
 
 function initEnvironment() {
     const navPill = document.getElementById('navConnPill');

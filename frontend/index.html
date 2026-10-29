@@ -36,7 +36,7 @@
     <div class="nav-status">
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
         <span id="navConnPill" style="background: rgba(6,182,212,0.12); border: 1px solid rgba(6,182,212,0.3); color: #cbd5e1; font-size: 0.72rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; font-family: monospace;" title="Connection status">
-          📱 Mill Wi-Fi: <strong style="color: #38bdf8;">http://192.168.1.130:8000</strong>
+          🌐 <strong>GitHub Pages Showcase Edition</strong>
         </span>
         <button id="btnConnectLiveBackend" class="btn btn-secondary" style="display: none; padding: 0.25rem 0.65rem; font-size: 0.72rem; border-radius: 6px; border: 1px solid rgba(56,189,248,0.4); color: #38bdf8;" onclick="promptBackendUrl()">
           📡 Connect Live Cloud Cam
@@ -152,18 +152,19 @@
           <div id="videoWrapper" style="position: relative; width: 100%; aspect-ratio: 16/9; background: #0a0f1a; border-radius: 10px; overflow: hidden; user-select: none;">
             <!-- 1. Live Backend Stream (used when localhost:8000 or cloud tunnel is active) -->
             <img id="cameraStream"
-                 src="/api/video_feed"
+                 src=""
                  alt="Live AI Camera Stream"
-                 style="display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;" />
+                 style="display: none; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;" />
 
             <!-- 2. Real Video / Webcam Player (used on GitHub Pages or standalone browser mode with 0-sec delay) -->
             <video id="html5VideoPlayer"
+                   src="testing video.mp4"
                    playsinline
                    autoplay
                    muted
                    loop
                    crossorigin="anonymous"
-                   style="display: none; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;">
+                   style="display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;">
             </video>
 
             <!-- 3. Real Interactive Gate Line & Bounding Boxes Canvas Overlay -->
@@ -699,6 +700,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=6.0"></script>
+  <script src="./js/app.js?v=6.1"></script>
 </body>
 </html>
