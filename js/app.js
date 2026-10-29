@@ -96,6 +96,12 @@ function bootApp() {
     try { initModule2(); } catch(e) { console.error('initModule2 err:', e); }
     try { initModule3(); } catch(e) { console.error('initModule3 err:', e); }
 
+    // Ensure counting status starts strictly in STOPPED state on browser load/refresh
+    isStandaloneCounting = false;
+    localStorage.setItem('aicam_counting_active', '0');
+    updateCountingStatusUI(false);
+    showStandbyOverlayImmediate();
+
     // On GitHub Pages or static host without cloud tunnel, boot standalone mode instantly (0ms delay)
     if (isGitHubPages && !cloudBackendUrl) {
         initStandaloneRealVideoMode();
@@ -1069,17 +1075,11 @@ window.startLiveCounting = async function() {
 };
 
 window.stopLiveCounting = async function() {
-    if (!backendAvailable) {
-        standaloneStopCounting();
-        return;
-    }
-    try {
-        const res = await fetch(getApiUrl('/api/video/stop_counting'), { method: 'POST' });
-        const data = await res.json();
-        showNotification('⏸️ Video & Live AI Counting Paused!', 'warning');
-        updateCountingStatusUI(false);
-    } catch (e) {
-        standaloneStopCounting();
+    standaloneStopCounting();
+    if (backendAvailable) {
+        try {
+            await fetch(getApiUrl('/api/video/stop_counting'), { method: 'POST' });
+        } catch (e) {}
     }
 };
 
@@ -2515,17 +2515,15 @@ function initStandaloneRealVideoMode() {
         if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
     }
 
-    // Check counting state: only start if explicitly running previously; default is STOPPED
-    const wasActive = localStorage.getItem('aicam_counting_active');
-    if (wasActive === '1') {
-        standaloneStartCounting();
-    } else {
-        // Stay 100% STOPPED! Never autoplay testing video clip on refresh!
-        isStandaloneCounting = false;
-        standaloneStats.is_counting = false;
-        updateCountingStatusUI(false);
-        showStandbyOverlayImmediate();
-        if (standaloneVideoEl) standaloneVideoEl.pause();
+    // By strict user instruction: Live Counting & Camera MUST ALWAYS BE STOPPED on refresh/page load!
+    // Counting ONLY begins when the user explicitly clicks [▶ Start Camera & Live Counting]!
+    isStandaloneCounting = false;
+    standaloneStats.is_counting = false;
+    localStorage.setItem('aicam_counting_active', '0');
+    updateCountingStatusUI(false);
+    showStandbyOverlayImmediate();
+    if (standaloneVideoEl) {
+        standaloneVideoEl.pause();
     }
 
     // Work timer ticker (updates live hours every second)
@@ -2566,13 +2564,14 @@ async function standaloneStartCounting() {
 function standaloneStopCounting() {
     isStandaloneCounting = false;
     standaloneStats.is_counting = false;
+    localStorage.setItem('aicam_counting_active', '0');
     updateCountingStatusUI(false);
 
     if (standaloneVideoEl) {
         standaloneVideoEl.pause();
     }
     showStandbyOverlayImmediate();
-    localStorage.setItem('aicam_counting_active', '0');
+    saveAppStateToStorage();
 
     showNotification('⏸️ Live Camera & AI Counting Stopped.', 'warning');
 }
