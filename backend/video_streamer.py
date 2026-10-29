@@ -54,6 +54,16 @@ class VideoStreamManager:
                 if not self.cap.isOpened():
                     print(f"[VideoStream] Webcam {idx} unavailable. Falling back to testing video.")
                     self._try_open_testing_video()
+            elif source_type in ("rtsp", "ipcam", "hikvision") or (source_path and str(source_path).startswith(("rtsp://", "http://", "https://"))):
+                self.source_type = "rtsp"
+                self.source_path = source_path
+                print(f"[VideoStream] Connecting to Hikvision / RTSP stream: {source_path}")
+                self.cap = cv2.VideoCapture(source_path)
+                if not self.cap.isOpened():
+                    print(f"[VideoStream] Could not connect to RTSP stream: {source_path}. Using testing video.")
+                    self._try_open_testing_video()
+                else:
+                    print(f"[VideoStream] Successfully connected to RTSP stream: {source_path}")
             elif source_type == "file":
                 video_file = source_path or TESTING_VIDEO_PATH
                 if os.path.exists(video_file):

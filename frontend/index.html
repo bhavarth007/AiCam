@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=8.0?v=5.0">
+  <link rel="stylesheet" href="./css/style.css?v=9.0?v=5.0">
 </head>
 <body>
 
@@ -38,6 +38,7 @@
         <span id="navConnPill" style="background: rgba(6,182,212,0.12); border: 1px solid rgba(6,182,212,0.3); color: #cbd5e1; font-size: 0.72rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; font-family: monospace;" title="Connection status">
           🌐 <strong>GitHub Pages Showcase Edition</strong>
         </span>
+        <button class="btn btn-secondary" onclick="openHikConnectModal()" style="padding: 0.25rem 0.65rem; font-size: 0.72rem; border-radius: 6px; border: 1px solid rgba(16,185,129,0.5); color: #34d399; font-weight: 700;">📷 Connect Hik-Connect Cam</button>
         <button id="btnConnectLiveBackend" class="btn btn-secondary" style="display: none; padding: 0.25rem 0.65rem; font-size: 0.72rem; border-radius: 6px; border: 1px solid rgba(56,189,248,0.4); color: #38bdf8;" onclick="promptBackendUrl()">
           📡 Connect Live Cloud Cam
         </button>
@@ -700,6 +701,61 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=8.0"></script>
+  <script src="./js/app.js?v=9.0"></script>
+
+  <!-- HIKVISION & HIK-CONNECT CAMERA INTEGRATION MODAL -->
+  <div id="hikConnectModal" class="lightbox-overlay" style="display: none;" onclick="closeHikConnectModal(event)">
+    <div class="lightbox-content" style="max-width: 720px; height: auto; max-height: 90vh;" onclick="event.stopPropagation()">
+      <div class="lightbox-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="background: #10b981; color: #000; font-size: 0.72rem; font-weight: 800; padding: 2px 8px; border-radius: 4px;">HIK-CONNECT &amp; RTSP</span>
+          <h3 style="font-size: 1rem; font-weight: 700; color: #fff; margin: 0;">Connect Office CCTV / Hik-Connect Camera</h3>
+        </div>
+        <button class="lightbox-close-btn" onclick="closeHikConnectModal()" title="Close">✕</button>
+      </div>
+
+      <div style="padding: 1.5rem; overflow-y: auto; display: flex; flex-direction: column; gap: 1.25rem;">
+        <div style="background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.3); border-radius: 10px; padding: 1rem;">
+          <h4 style="color: #34d399; font-size: 0.92rem; margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 6px;">
+            📱 Step-by-Step Guide for Hik-Connect App
+          </h4>
+          <ol style="margin: 0; padding-left: 1.25rem; font-size: 0.82rem; color: #cbd5e1; line-height: 1.6;">
+            <li>Open the <strong>Hik-Connect</strong> app on your mobile phone.</li>
+            <li>Tap your office gate camera &gt; Tap the <strong>⚙️ Settings</strong> icon.</li>
+            <li>Go to <strong>Device Information</strong> &gt; note the <strong>IP Address</strong> (e.g. <code>192.168.1.130</code>).</li>
+            <li>Under <strong>Device Settings</strong>, ensure <strong>Video Encryption</strong> is turned <strong>OFF</strong> (or use your 6-letter camera verification code from the camera label as password).</li>
+            <li>Ensure your PC running TexVision is connected to the same office Wi-Fi / network.</li>
+          </ol>
+        </div>
+
+        <div class="form-group" style="margin: 0;">
+          <label style="font-size: 0.84rem; font-weight: 700; color: #f8fafc; margin-bottom: 0.4rem; display: block;">
+            Hikvision RTSP Stream URL or IP Camera Web Stream:
+          </label>
+          <input type="text" id="hikvisionRtspUrl" class="form-control"
+                 placeholder="rtsp://admin:Password123@192.168.1.130:554/Streaming/Channels/101"
+                 style="font-family: monospace; font-size: 0.85rem; padding: 0.65rem 0.85rem;" />
+          <p style="font-size: 0.74rem; color: #94a3b8; margin-top: 0.35rem;">
+            Tip: Channel <code>101</code> is Main HD Stream; Channel <code>102</code> is Fast AI Substream.
+          </p>
+        </div>
+
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button type="button" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;" onclick="setHikPreset('main')">
+            Use Main Stream (101)
+          </button>
+          <button type="button" class="btn btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;" onclick="setHikPreset('sub')">
+            Use Sub Stream (102 - Recommended for AI)
+          </button>
+        </div>
+      </div>
+
+      <div class="lightbox-footer" style="justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn btn-secondary" onclick="closeHikConnectModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="connectHikvisionStream()">🔗 Connect Live Office Camera</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

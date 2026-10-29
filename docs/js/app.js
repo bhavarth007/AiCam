@@ -2205,12 +2205,12 @@ let standaloneStats = {
     present_today: 4,
     currently_inside: 4,
     absent_today: 0,
-    unknowns_today: 1,
+    unknowns_today: 0,
     fps: 30.0,
     source_type: "file",
     session_in: 12,
     session_out: 9,
-    session_unknown: 1,
+    session_unknown: 0,
     is_counting: false
 };
 
@@ -2221,17 +2221,7 @@ let standaloneEvents = [
     { type: 'unknown', title: '⚠️ Unknown Visitor Detected', code: 'UNREG-FACE', badge: 'ALERT', msg: 'Unregistered visitor crossed gate IN. HD Snapshot captured.', time: '10:42:30', direction: 'IN', snapshot: 'data/staff_photos/staff_FC_TXS_002.jpg' }
 ];
 
-let standaloneUnknowns = [
-    {
-        id: 1,
-        time: '10:42:30',
-        date: getLocalDateString(),
-        snapshot_url: 'data/staff_photos/staff_FC_TXS_002.jpg',
-        camera_id: 'Gate Cam 1',
-        status: 'Unreviewed',
-        notes: 'Unregistered visitor entered gate entrance'
-    }
-];
+let standaloneUnknowns = [];
 
 // Backend availability check
 async function detectBackend() {
@@ -2455,8 +2445,15 @@ function loadAppStateFromStorage() {
         const unks = localStorage.getItem('aicam_standalone_unknowns');
         if (unks) {
             const parsed = JSON.parse(unks);
-            if (Array.isArray(parsed) && parsed.length > 0) standaloneUnknowns = parsed;
+            if (Array.isArray(parsed)) {
+                // Purge any old test mock photos from local development (staff_FC_TXS_002, demo_, etc.)
+                standaloneUnknowns = parsed.filter(u => u && u.snapshot_url && !u.snapshot_url.includes('staff_FC_TXS_') && !u.snapshot_url.includes('demo_'));
+            }
         }
+        // Always synchronize unknowns_today with actual records
+        const todayUnks = standaloneUnknowns.filter(u => !u.date || u.date === getLocalDateString()).length;
+        standaloneStats.unknowns_today = todayUnks;
+        standaloneStats.session_unknown = todayUnks;
     } catch(e) {}
 }
 
@@ -2770,12 +2767,24 @@ window.standaloneSimPass = function(staffId, dir) {
 
 function renderStandaloneStats() {
     const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const todayCount = standaloneUnknowns.filter(u => !u.date || u.date === getLocalDateString()).length;
+    standaloneStats.unknowns_today = todayCount;
+    standaloneStats.session_unknown = todayCount;
+
     setT('kpiTotalStaff', standaloneStats.total_staff);
     setT('kpiPresentToday', standaloneStats.present_today);
     setT('kpiCurrentlyInside', standaloneStats.currently_inside);
     setT('kpiAbsentToday', standaloneStats.absent_today);
-    setT('kpiUnknownsToday', standaloneStats.unknowns_today);
-    setT('sourceStatusText', `Source: Testing Video (testing video.mp4) | Gate Active`);
+    setT('kpiUnknownsToday', todayCount);
+
+    const unkBadge = document.getElementById('unknownsCountBadge');
+    if (unkBadge) {
+        unkBadge.textContent = todayCount;
+        unkBadge.style.display = todayCount > 0 ? 'inline-block' : 'none';
+    }
+
+    const srcLabel = standaloneSource === 'webcam' ? 'Live Device Camera (0s latency)' : 'Testing Video (testing video.mp4)';
+    setT('sourceStatusText', `Source: ${srcLabel} | Gate Active`);
 }
 
 function renderStandaloneEvents() {
@@ -2849,3 +2858,64 @@ function renderStandaloneUnknowns(filterDate = null) {
         badge.style.display = standaloneUnknowns.length > 0 ? 'inline-block' : 'none';
     }
 }
+
+// ─── Hikvision & Hik-Connect Mobile App Camera Integration ──────────────────
+window.openHikConnectModal = function() {
+    const modal = document.getElementById('hikConnectModal');
+    const input = document.getElementById('hikvisionRtspUrl');
+    if (input) {
+        input.value = localStorage.getItem('aicam_hikvision_url') || 'rtsp://admin:admin12345@192.168.1.130:554/Streaming/Channels/102';
+    }
+    if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+};
+
+window.closeHikConnectModal = function(e = null) {
+    if (e && e.target && e.target.id !== 'hikConnectModal' && !e.target.classList.contains('lightbox-close-btn')) return;
+    const modal = document.getElementById('hikConnectModal');
+    if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+};
+
+window.setHikPreset = function(type) {
+    const input = document.getElementById('hikvisionRtspUrl');
+    if (!input) return;
+    let val = input.value.trim() || 'rtsp://admin:admin12345@192.168.1.130:554/Streaming/Channels/101';
+    if (type === 'main') {
+        input.value = val.replace('/Channels/102', '/Channels/101');
+    } else {
+        input.value = val.replace('/Channels/101', '/Channels/102');
+    }
+};
+
+window.connectHikvisionStream = async function() {
+    const input = document.getElementById('hikvisionRtspUrl');
+    const url = input ? input.value.trim() : '';
+    if (!url) {
+        showNotification('Please enter a valid Hikvision RTSP or Stream URL', 'error');
+        return;
+    }
+    localStorage.setItem('aicam_hikvision_url', url);
+    closeHikConnectModal();
+
+    if (backendAvailable && !isGitHubPages) {
+        try {
+            const fd = new FormData();
+            fd.append('source_type', 'rtsp');
+            fd.append('source_path', url);
+            const res = await fetch(getApiUrl('/api/video/set_source'), { method: 'POST', body: fd });
+            const data = await res.json();
+            showNotification('Connected to Hikvision Camera Stream via local backend!', 'success');
+            reloadCameraStream();
+            return;
+        } catch (e) {
+            console.warn('Backend connect failed:', e);
+        }
+    }
+
+    showNotification('📡 Hikvision Stream configured: ' + url + '. Run local backend (python backend/app.py) for real-time RTSP decoding.', 'info');
+};
