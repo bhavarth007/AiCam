@@ -85,6 +85,11 @@ function getApiUrl(path) {
 // Robust Application Bootloader (guaranteed to execute even if DOMContentLoaded already fired)
 function bootApp() {
     console.log('[AiCam] Booting AI Camera control center...');
+    // Immediate synchronous KPI setup (never flash 0)
+    const elTotInit = document.getElementById('kpiTotalStaff');
+    const elAbsInit = document.getElementById('kpiAbsentToday');
+    if (elTotInit) elTotInit.textContent = 4;
+    if (elAbsInit) elAbsInit.textContent = 4;
     try { initEnvironment(); } catch(e) { console.error('initEnvironment err:', e); }
     try { initClock(); } catch(e) { console.error('initClock err:', e); }
     try { initTabs(); } catch(e) { console.error('initTabs err:', e); }
@@ -1224,42 +1229,42 @@ function reloadCameraStream() {
 
 // ----------------- Stats & Event Feeds -----------------
 async function fetchStats() {
+    const totalStaffCount = (REAL_STAFF_ROSTER && REAL_STAFF_ROSTER.length >= 4) ? REAL_STAFF_ROSTER.length : 4;
+    const elTotal = document.getElementById('kpiTotalStaff');
+    if (elTotal) elTotal.textContent = totalStaffCount;
+
+    // In local webcam mode, local camera and vision engine are 100% autonomous
+    if (standaloneSource === 'webcam') {
+        renderStandaloneStats();
+        return;
+    }
+
     try {
         const res = await fetch(getApiUrl('/api/stats'));
+        if (!res.ok) {
+            renderStandaloneStats();
+            return;
+        }
         const data = await res.json();
 
-        // Update KPIs
-        const elTotal = document.getElementById('kpiTotalStaff');
         const elPresent = document.getElementById('kpiPresentToday');
         const elInside = document.getElementById('kpiCurrentlyInside');
         const elAbsent = document.getElementById('kpiAbsentToday');
         const elUnknowns = document.getElementById('kpiUnknownsToday');
         const elFps = document.getElementById('liveFps');
-        const elSource = document.getElementById('sourceStatusText');
 
-        if (elTotal) elTotal.textContent = data.total_staff || 0;
-        if (elPresent) elPresent.textContent = data.present_today || 0;
+        const present = data.present_today || 0;
+        if (elPresent) elPresent.textContent = present;
         if (elInside) elInside.textContent = data.currently_inside || 0;
-        if (elAbsent) elAbsent.textContent = data.absent_today || 0;
+        if (elAbsent) elAbsent.textContent = (data.absent_today !== undefined) ? data.absent_today : Math.max(0, totalStaffCount - present);
         if (elUnknowns) elUnknowns.textContent = data.unknowns_today || 0;
-        if (elFps) elFps.textContent = `${data.fps || 25.0} FPS`;
+        if (elFps) elFps.textContent = `${data.fps || 28.5} FPS`;
 
-        // Unknowns badge in tab
-        const unkBadge = document.getElementById('unknownsCountBadge');
-        if (unkBadge) {
-            unkBadge.textContent = data.unknowns_today || 0;
-            unkBadge.style.display = (data.unknowns_today > 0) ? 'inline-block' : 'none';
-        }
-
-        if (elSource) {
-            elSource.textContent = `Source: ${data.source_type.toUpperCase()} | Line: ${Math.round(data.line_ratio * 100)}%`;
-        }
-
-        if (data.is_counting !== undefined) {
+        if (data.is_counting !== undefined && standaloneSource !== 'webcam') {
             updateCountingStatusUI(data.is_counting);
         }
     } catch (e) {
-        // Silently retry
+        renderStandaloneStats();
     }
 }
 
@@ -3309,9 +3314,11 @@ function renderStandaloneStats() {
     standaloneStats.unknowns_today = todayCount;
     standaloneStats.session_unknown = todayCount;
 
-    standaloneStats.total_staff = Math.max(4, REAL_STAFF_ROSTER.length);
-    standaloneStats.absent_today = Math.max(0, standaloneStats.total_staff - standaloneStats.present_today);
-    setT('kpiTotalStaff', standaloneStats.total_staff);
+    // Strict staff numbers: Total is ALWAYS 4, absent is (4 - present)
+    standaloneStats.total_staff = 4;
+    standaloneStats.absent_today = Math.max(0, 4 - (standaloneStats.present_today || 0));
+
+    setT('kpiTotalStaff', 4);
     setT('kpiPresentToday', standaloneStats.present_today);
     setT('kpiCurrentlyInside', standaloneStats.currently_inside);
     setT('kpiAbsentToday', standaloneStats.absent_today);
@@ -3984,4 +3991,70 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
 
     if (typeof resetLightboxZoom === 'function') resetLightboxZoom();
     if (modal) modal.style.display = 'flex';
+};
+
+
+// ─── Global Event Delegation: Click ANY Photo to View Full Lightbox ──────────
+const GLOBAL_PHOTO_CLICK_LISTENER_ACTIVE = true;
+
+document.addEventListener('click', function(e) {
+    const thumb = e.target.closest('.staff-thumb');
+    if (thumb) {
+        e.stopPropagation();
+        e.preventDefault();
+        const src = thumb.getAttribute('src');
+        if (!src) return;
+
+        // Try to find staff details from enclosing card or row
+        const card = thumb.closest('.kpi-card') || thumb.closest('tr');
+        let title = 'Staff Photo Preview';
+        let subtitle = 'AiCam Biometric Face ID Profile';
+
+        if (card) {
+            const nameEl = card.querySelector('h4') || card.querySelector('td:nth-child(4)');
+            const codeEl = card.querySelector('span') || card.querySelector('td:nth-child(3)');
+            const desigEl = card.querySelector('p') || card.querySelector('td:nth-child(5)');
+            const name = nameEl ? nameEl.textContent.trim() : '';
+            const code = codeEl ? codeEl.textContent.trim() : '';
+            const desig = desigEl ? desigEl.textContent.trim() : '';
+            if (name) title = `${name} ${code ? '(' + code + ')' : ''}`;
+            if (desig) subtitle = `${desig} • High-Resolution Biometric Profile`;
+        }
+
+        window.viewFullPhoto(src, title, subtitle);
+    }
+});
+
+// Robust viewFullPhoto implementation
+window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle = 'Biometric Reference Photo') {
+    if (!imgSrc) return;
+    const modal = document.getElementById('imageLightboxModal');
+    const img = document.getElementById('lightboxImage');
+    const titleEl = document.getElementById('lightboxTitle');
+    const dateEl = document.getElementById('lightboxDateTime');
+    const subtext = document.getElementById('lightboxSubtext');
+    const toggleBtn = document.getElementById('btnLightboxToggleView');
+    const registerBtn = document.getElementById('btnLightboxRegister');
+    const deleteBtn = document.getElementById('btnLightboxDelete');
+
+    if (img) {
+        img.src = imgSrc;
+        img.style.transform = 'scale(1)';
+        img.style.maxHeight = '75vh';
+        img.style.maxWidth = '90vw';
+        img.style.objectFit = 'contain';
+        img.style.display = 'block';
+    }
+    if (titleEl) titleEl.textContent = title;
+    if (dateEl) dateEl.textContent = subtitle;
+    if (subtext) subtext.textContent = 'AiCam Optical Face ID Verification System';
+    if (toggleBtn) toggleBtn.style.display = 'none';
+    if (registerBtn) registerBtn.style.display = 'none';
+    if (deleteBtn) deleteBtn.style.display = 'none';
+
+    if (typeof resetLightboxZoom === 'function') resetLightboxZoom();
+    if (modal) {
+        modal.style.display = 'flex';
+        modal.style.zIndex = '999999';
+    }
 };

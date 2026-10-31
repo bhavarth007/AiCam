@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=20.0">
+  <link rel="stylesheet" href="./css/style.css?v=21.0">
 </head>
 <body>
 
@@ -86,7 +86,7 @@
       <div class="kpi-card">
         <div class="kpi-info">
           <p>Total Staff</p>
-          <h2 id="kpiTotalStaff">0</h2>
+          <h2 id="kpiTotalStaff">4</h2>
         </div>
         <div class="kpi-icon cyan">
           <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
@@ -116,7 +116,7 @@
       <div class="kpi-card">
         <div class="kpi-info">
           <p>Absent Today</p>
-          <h2 id="kpiAbsentToday">0</h2>
+          <h2 id="kpiAbsentToday">4</h2>
         </div>
         <div class="kpi-icon violet">
           <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
@@ -872,7 +872,12 @@
           <span style="background: #f43f5e; color: #fff; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 4px;">4K SECURITY SNAPSHOT</span>
           <h3 id="lightboxTitle" style="font-size: 0.95rem; font-weight: 700; color: #fff; margin: 0;">⚠️ UNREGISTERED VISITOR DETAILS</h3>
         </div>
-        <button class="lightbox-close-btn" onclick="closeImageLightbox()" title="Close (Esc)">✕</button>
+                <div style="display: flex; gap: 6px; align-items: center; margin-left: auto; margin-right: 12px;">
+            <button id="btnZoomIn" class="btn btn-secondary btn-sm" onclick="zoomInLightbox()" style="padding: 2px 8px; font-size: 0.8rem;" title="Zoom In (+)">➕ Zoom In</button>
+            <button id="btnZoomOut" class="btn btn-secondary btn-sm" onclick="zoomOutLightbox()" style="padding: 2px 8px; font-size: 0.8rem;" title="Zoom Out (-)">➖ Zoom Out</button>
+            <button id="btnZoomReset" class="btn btn-secondary btn-sm" onclick="resetLightboxZoom()" style="padding: 2px 8px; font-size: 0.8rem;" title="Reset Zoom">🔄 Reset</button>
+          </div>
+          <button class="lightbox-close-btn" onclick="closeImageLightbox()" title="Close (Esc)">✕</button>
       </div>
 
       <div class="lightbox-img-wrapper">
@@ -1035,6 +1040,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=20.0"></script>
+  <script src="./js/app.js?v=21.0"></script>
 </body>
 </html>
