@@ -122,6 +122,7 @@ window.TEST_STAFF_ROSTER = TEST_STAFF_ROSTER;
 window.REAL_STAFF_ROSTER = REAL_STAFF_ROSTER;
 window.standaloneEvents = standaloneEvents;
 window.standaloneUnknowns = standaloneUnknowns;
+window.reportsViewMode = reportsViewMode;
 
 let currentTab = 'attendance';
 let pollInterval = null;
@@ -337,6 +338,8 @@ function loadSavedGateLine() {
 let gateGeometry = localStorage.getItem('aicam_gate_geometry') || 'box'; // 'box' | 'line' (default to 'box' for desk camera)
 let gateBox = loadSavedGateBox() || DEFAULT_GATE_BOX;
 let gateLine = loadSavedGateLine() || DEFAULT_GATE_LINE;
+window.gateBox = gateBox;
+window.gateLine = gateLine;
 let lineOrientation = 'horizontal';
 let lineLength = 1.0;
 let linePos    = 0.65;
@@ -1149,6 +1152,38 @@ function setupCanvasAutoRedraw() {
 // Continuous canvas redraw (keep in sync with live video resize)
 
 
+
+// ─── Auto-Calibrate Door Zone Position for Video Source ─────────────────────────
+function autoSetGatePositionForSource(type) {
+    if (type === 'file') {
+        // Calibrated doorway for testing video.mp4
+        gateGeometry = 'box';
+        gateBox = { x: 0.34, y: 0.22, w: 0.25, h: 0.65 };
+        gateLine = { x1: 0.34, y1: 0.65, x2: 0.59, y2: 0.65 };
+        window.gateBox = gateBox;
+        window.gateLine = gateLine;
+        lineOrientation = 'horizontal';
+        saveGateBoxToStorage();
+        saveGateLineToStorage();
+        setGateGeometryMode('box');
+        updateBoxSliders();
+        drawLineOnCanvas();
+    } else if (type === 'webcam') {
+        // Calibrated doorway behind office chair for Live Webcam
+        gateGeometry = 'box';
+        gateBox = { x: 0.46, y: 0.32, w: 0.22, h: 0.60 };
+        gateLine = { x1: 0.46, y1: 0.68, x2: 0.68, y2: 0.68 };
+        window.gateBox = gateBox;
+        window.gateLine = gateLine;
+        lineOrientation = 'horizontal';
+        saveGateBoxToStorage();
+        saveGateLineToStorage();
+        setGateGeometryMode('box');
+        updateBoxSliders();
+        drawLineOnCanvas();
+    }
+}
+
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
     localStorage.setItem('aicam_counting_active', '1');
@@ -1250,7 +1285,19 @@ function updateCountingStatusUI(isCounting) {
 }
 
 async function setVideoSource(type, path = null) {
-    if (!backendAvailable) {
+    standaloneSource = type;
+    localStorage.setItem('aicam_video_source', type);
+
+    // Auto-set reports view mode and door geometry based on selected source
+    if (type === 'file') {
+        setReportsViewMode('testing');
+        autoSetGatePositionForSource('file');
+    } else {
+        setReportsViewMode('live');
+        autoSetGatePositionForSource('webcam');
+    }
+
+    if (!backendAvailable || isGitHubPages) {
         standaloneSetVideoSource(type, path);
         return;
     }
@@ -1700,6 +1747,11 @@ function initReports() {
 let lastReportSig = "";
 
 async function fetchTodayReportAuto() {
+    // If viewing testing video records or source is testing video, never overwrite with live backend!
+    if (reportsViewMode === 'testing' || standaloneSource === 'file' || !backendAvailable || isGitHubPages) {
+        renderStandaloneReports();
+        return;
+    }
     const dateInput = document.getElementById('reportDatePicker');
     const customDate = dateInput && dateInput.value ? dateInput.value : null;
     const url = customDate ? `/api/attendance/report?date=${customDate}` : '/api/attendance/today';
@@ -1994,6 +2046,8 @@ async function loadUnknowns(filterDate = null, force = false) {
     }
 }
 
+window.unknownSnapshotsMap = window.unknownSnapshotsMap || new Map();
+
 function renderUnknownsGallery(list, targetDate) {
     const container = document.getElementById('unknownsGallery');
     if (!container) return;
@@ -2010,28 +2064,33 @@ function renderUnknownsGallery(list, targetDate) {
 
     let html = '';
     list.forEach(item => {
-        const snap = item.snapshot_path || '';
-        const full = item.full_path || snap;
+        const id = item.id;
+        window.unknownSnapshotsMap.set(String(id), item);
+        window.unknownSnapshotsMap.set(Number(id), item);
+
+        const snap = item.snapshot_path || item.snapshot_url || '';
         html += `
-            <div class="snapshot-card" id="unknown-card-${item.id}">
-                <div style="position: relative; overflow: hidden; cursor: pointer;" onclick="openImageLightbox('${snap}', '${full}', '${item.date}', '${item.timestamp}', ${item.id})" title="Click to view full screen without opening new tab">
-                    <img src="${snap}" class="snapshot-img" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'240\\' height=\\'180\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%231e293b\\'/><text x=\\'50%\\' y=\\'50%\\' dominant-baseline=\\'middle\\' text-anchor=\\'middle\\' fill=\\'%23f43f5e\\' font-size=\\'18\\'>⚠️ Unknown Face</text></svg>'">
+            <div class="snapshot-card" id="unknown-card-${id}" data-unknown-id="${id}">
+                <div style="position: relative; overflow: hidden; cursor: pointer;" data-unknown-id="${id}" title="Click to view full size image in high resolution">
+                    <img src="${snap}" class="snapshot-img clickable-photo" data-unknown-id="${id}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'240\' height=\'180\'><rect width=\'100%\' height=\'100%\' fill=\'%231e293b\'/><text x=\'50%\' y=\'50%\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%23f43f5e\' font-size=\'18\'>👤 Unknown Face</text></svg>'">
                     <span style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 2px 7px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(255,255,255,0.25);">
                         🔍 4K View
                     </span>
                 </div>
-                <div class="snapshot-footer">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span class="status-badge" style="background: rgba(244,63,94,0.2); color: #fb7185;">Unregistered</span>
-                        <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;">${item.timestamp.split(' ')[1] || ''}</span>
+                <div class="snapshot-info">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                        <span class="badge-unknown">Unregistered</span>
+                        <span style="font-family: monospace; font-size: 0.75rem; color: var(--accent-cyan); font-weight: 600;">${item.timestamp ? item.timestamp.split(' ')[1] : (item.time || '')}</span>
                     </div>
-                    <p style="font-size: 0.75rem; color: #cbd5e1; margin-top: 0.2rem;">Folder: <code>/${item.date}/</code></p>
-                    <div style="display: flex; gap: 0.4rem; margin-top: 0.5rem;">
-                        <button class="btn btn-primary" style="flex: 2; font-size: 0.75rem; justify-content: center; padding: 0.35rem 0.6rem;" onclick="registerFromUnknown('${snap}')">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.6rem;">
+                        Folder: <code>/${item.date || 'Today'}/</code>
+                    </div>
+                    <div style="display: flex; gap: 0.4rem;">
+                        <button class="btn btn-secondary" style="flex: 1; padding: 0.35rem 0.5rem; font-size: 0.75rem;" onclick="registerFromUnknownById('${id}')">
                             ➕ Register Staff
                         </button>
-                        <button class="btn btn-rose" style="flex: 1; font-size: 0.75rem; justify-content: center; padding: 0.35rem 0.5rem;" onclick="deleteUnknown(${item.id})">
-                            🗑️ Delete
+                        <button class="btn btn-rose" style="padding: 0.35rem 0.65rem; font-size: 0.75rem;" onclick="deleteUnknown(${id})" title="Delete snapshot">
+                            🗑️
                         </button>
                     </div>
                 </div>
@@ -2040,6 +2099,12 @@ function renderUnknownsGallery(list, targetDate) {
     });
     container.innerHTML = html;
 }
+
+window.registerFromUnknownById = function(id) {
+    const item = window.unknownSnapshotsMap ? window.unknownSnapshotsMap.get(id) : null;
+    const url = item ? (item.snapshot_path || item.snapshot_url) : '';
+    registerFromUnknown(url);
+};
 
 // ----------------- Interactive Fullscreen In-Page Lightbox -----------------
 let currentLightboxItem = null;
@@ -2715,11 +2780,15 @@ async function standaloneSetVideoSource(type, path = null) {
         }
         standaloneVideoEl.srcObject = null;
         standaloneVideoEl.src = path || 'testing video.mp4';
+        standaloneVideoEl.loop = true;
+        standaloneVideoEl.muted = true;
         standaloneVideoEl.load();
         if (isStandaloneCounting) standaloneVideoEl.play().catch(e => console.log(e));
         if (btnTest) btnTest.className = 'btn btn-primary';
         if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
-        showNotification('🎬 Switched to Testing Video (testing video.mp4)', 'info');
+        setReportsViewMode('testing');
+        autoSetGatePositionForSource('file');
+        showNotification('🎬 Switched to Testing Video (Doorway Auto-Calibrated)', 'info');
     } else if (type === 'webcam') {
         try {
             if (standaloneWebcamStream) {
@@ -2925,14 +2994,14 @@ function detectGateLineMotion() {
         let gateSumX = 0, gateSumY = 0;
         let deskMotionCount = 0;
 
-        // High sensitivity sampling (diff > 18)
+        // Robust person-sized sampling (diff > 35 ignores camera compression noise)
         for (let y = 0; y < 90; y += 2) {
             for (let x = 0; x < 160; x += 2) {
                 const idx = (y * 160 + x) * 4;
                 const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
                              Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
                              Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
-                if (diff > 18) {
+                if (diff > 35) {
                     if (x >= gMinX && x <= gMaxX && y >= gMinY && y <= gMaxY) {
                         gateMotionCount++;
                         gateSumX += x;
@@ -2947,8 +3016,8 @@ function detectGateLineMotion() {
 
         prevFrameData = new Uint8ClampedArray(currData);
 
-        // Active motion detected in gate zone
-        if (gateMotionCount >= 3) {
+        // Require genuine person-sized motion (>= 12 moving pixels in gate) to begin tracking
+        if (gateMotionCount >= 12) {
             const normX = (gateSumX / gateMotionCount) / 160;
             const normY = (gateSumY / gateMotionCount) / 90;
 
@@ -2961,18 +3030,18 @@ function detectGateLineMotion() {
                     curX: normX,
                     curY: normY,
                     maxMotion: gateMotionCount,
-                    hadDesk: deskMotionCount > 6,
-                    deskOccupied: deskMotionCount > 12
+                    hadDesk: deskMotionCount > 8,
+                    deskOccupied: deskMotionCount > 15
                 };
             } else {
                 activeGatePass.lastSeenTime = now;
                 activeGatePass.curX = normX;
                 activeGatePass.curY = normY;
                 activeGatePass.maxMotion = Math.max(activeGatePass.maxMotion, gateMotionCount);
-                if (deskMotionCount > 6) activeGatePass.hadDesk = true;
+                if (deskMotionCount > 8) activeGatePass.hadDesk = true;
             }
 
-            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03) ? 'OUT' : 'IN';
+            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03 || activeGatePass.curX > activeGatePass.startX + 0.05) ? 'OUT' : 'IN';
             liveGateMotion = {
                 active: true,
                 x: normX,
@@ -2981,23 +3050,36 @@ function detectGateLineMotion() {
                 count: gateMotionCount
             };
         } else {
-            // Motion in gate paused or completed
+            // Motion in gate settled or person finished passage
             if (activeGatePass) {
                 const elapsed = now - activeGatePass.startTime;
                 const silence = now - activeGatePass.lastSeenTime;
 
-                if (silence > 220 && elapsed >= 250) {
-                    if (now - lastMotionCrossingTime >= 1500) {
+                // STRICT REAL PERSON CRITERIA:
+                // Must have had at least 20 peak moving pixels and taken at least 450ms (never trigger on empty room!)
+                if (silence > 300 && elapsed >= 450 && activeGatePass.maxMotion >= 20) {
+                    if (now - lastMotionCrossingTime >= 2000) {
                         lastMotionCrossingTime = now;
 
+                        // State & trajectory aware direction
                         let dir = 'IN';
                         const deltaY = activeGatePass.curY - activeGatePass.startY;
-                        if (deltaY < -0.04) {
-                            dir = 'OUT';
-                        } else if (deltaY > 0.04) {
-                            dir = 'IN';
+                        const deltaX = activeGatePass.curX - activeGatePass.startX;
+
+                        if (standaloneSource === 'webcam') {
+                            // Office Webcam: Desk is left, door is right/back
+                            if (activeGatePass.hadDesk || deltaX > 0.04 || deltaY < -0.04) {
+                                dir = 'OUT';
+                            } else {
+                                dir = 'IN';
+                            }
                         } else {
-                            dir = (activeGatePass.curY > 0.55) ? 'IN' : 'OUT';
+                            // Testing Video: Doorway translation
+                            if (deltaY < -0.03 || deltaX > 0.03) {
+                                dir = 'OUT';
+                            } else {
+                                dir = 'IN';
+                            }
                         }
 
                         let isUnknown = false;
@@ -3006,21 +3088,18 @@ function detectGateLineMotion() {
                         } else if (activeGatePersonMode === 'bhavarth') {
                             isUnknown = false;
                         } else {
-                            // AUTO Mode
+                            // AUTO Mode:
                             if (standaloneSource === 'file') {
-                                // In testing factory video: alternate between staff and unknown visitors
+                                // In testing video: real person crossed
                                 testVideoCrossingRotation++;
-                                if (testVideoCrossingRotation % 3 === 0) {
-                                    isUnknown = true; // Every 3rd pass captures Unknown Visitor HD snapshot!
-                                } else {
-                                    isUnknown = false; // Registered factory staff
-                                }
+                                // Only every 4th real person crossing is an unknown visitor
+                                isUnknown = (testVideoCrossingRotation % 4 === 0);
                             } else {
                                 // Live Webcam
                                 if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {
-                                    isUnknown = true;
+                                    isUnknown = true; // Visitor at door while user at desk
                                 } else {
-                                    isUnknown = false;
+                                    isUnknown = false; // Bhavarth
                                 }
                             }
                         }
@@ -3029,7 +3108,8 @@ function detectGateLineMotion() {
                     }
                     activeGatePass = null;
                     liveGateMotion = null;
-                } else if (now - activeGatePass.startTime > 8000) {
+                } else if (silence > 400 || now - activeGatePass.startTime > 8000) {
+                    // Canceled noise or stale detection
                     activeGatePass = null;
                     liveGateMotion = null;
                 }
@@ -3421,6 +3501,7 @@ function renderStandaloneEvents() {
 // ─── Separate Tracking Data: Live Camera vs. Testing Video ──────────────────
 window.setReportsViewMode = function(mode) {
     reportsViewMode = mode;
+    window.reportsViewMode = mode;
     REAL_STAFF_ROSTER = (mode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
 
     const btnLive = document.getElementById('btnReportsViewLive');
@@ -3477,7 +3558,8 @@ function renderStandaloneReports(selectedDate = null) {
 
 
 function renderStandaloneUnknowns(filterDate = null) {
-    const targetDate = filterDate || (document.getElementById('unknownDatePicker') ? document.getElementById('unknownDatePicker').value : null) || getLocalDateString();
+    const dp = document.getElementById('unknownDatePicker');
+    const targetDate = filterDate || (dp && dp.value && dp.value.trim() ? dp.value.trim() : null) || getLocalDateString();
     
     // Filter by date if specified
     const filtered = standaloneUnknowns.filter(u => !targetDate || u.date === targetDate);
@@ -4057,6 +4139,7 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
 const GLOBAL_PHOTO_CLICK_LISTENER_ACTIVE = true;
 
 document.addEventListener('click', function(e) {
+    // 1. Staff Thumbnail
     const thumb = e.target.closest('.staff-thumb');
     if (thumb) {
         e.stopPropagation();
@@ -4064,7 +4147,6 @@ document.addEventListener('click', function(e) {
         const src = thumb.getAttribute('src');
         if (!src) return;
 
-        // Try to find staff details from enclosing card or row
         const card = thumb.closest('.kpi-card') || thumb.closest('tr');
         let title = 'Staff Photo Preview';
         let subtitle = 'AiCam Biometric Face ID Profile';
@@ -4081,6 +4163,23 @@ document.addEventListener('click', function(e) {
         }
 
         window.viewFullPhoto(src, title, subtitle);
+        return;
+    }
+
+    // 2. Unknown Snapshot Card or Thumbnail Click
+    const unkTarget = e.target.closest('.snapshot-card, .snapshot-img, [data-unknown-id]');
+    if (unkTarget && !e.target.closest('button')) {
+        e.stopPropagation();
+        e.preventDefault();
+        const id = unkTarget.getAttribute('data-unknown-id') || (unkTarget.closest('[data-unknown-id]') ? unkTarget.closest('[data-unknown-id]').getAttribute('data-unknown-id') : null);
+        const item = id && window.unknownSnapshotsMap ? window.unknownSnapshotsMap.get(id) : null;
+        const img = unkTarget.tagName === 'IMG' ? unkTarget : unkTarget.querySelector('img');
+        const src = item ? (item.full_path || item.full_url || item.snapshot_path || item.snapshot_url) : (img ? img.getAttribute('src') : null);
+        if (src) {
+            const timeInfo = item ? (item.timestamp || item.time || '') : '';
+            window.viewFullPhoto(src, `⚠️ UNREGISTERED VISITOR ${timeInfo ? '(' + timeInfo + ')' : ''}`, '4K Optical Security Capture');
+        }
+        return;
     }
 });
 
