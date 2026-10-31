@@ -115,7 +115,13 @@ function bootApp() {
         return;
     }
 
-    // Auto-detect whether backend is reachable; if not, use standalone real-video engine
+    // Robust Dual-Engine Boot:
+    // If user was using Live Webcam, local camera MUST run and resume immediately!
+    if (savedSource === 'webcam' || isGitHubPages) {
+        initStandaloneRealVideoMode(isSavedActive, savedSource);
+    }
+
+    // Connect backend background stats if available
     detectBackend().then(hasBackend => {
         if (hasBackend) {
             if (isSavedActive) {
@@ -134,12 +140,14 @@ function bootApp() {
                 } else if (currentTab === 'reports') {
                     fetchTodayReportAuto();
                 }
-            }, 500);
-        } else {
+            }, 1000);
+        } else if (savedSource !== 'webcam' && !isGitHubPages) {
             initStandaloneRealVideoMode(isSavedActive, savedSource);
         }
     }).catch(() => {
-        initStandaloneRealVideoMode(isSavedActive, savedSource);
+        if (savedSource !== 'webcam' && !isGitHubPages) {
+            initStandaloneRealVideoMode(isSavedActive, savedSource);
+        }
     });
 }
 
@@ -1767,6 +1775,11 @@ function renderAttendanceReportTable(records, reportDate) {
                 <td>${outTimeHtml}</td>
                 <td style="font-weight: 700; font-family: monospace; color: #e2e8f0;">${hoursDisplay}</td>
                 <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" style="font-size: 0.72rem; padding: 3px 8px; color: var(--accent-cyan); border-color: rgba(56,189,248,0.4);" onclick="openPersonTimeline('${r.staff_code}')">
+                        📜 View Log (${r.in_count + r.out_count}x)
+                    </button>
+                </td>
             </tr>
         `;
     });
@@ -3296,6 +3309,8 @@ function renderStandaloneStats() {
     standaloneStats.unknowns_today = todayCount;
     standaloneStats.session_unknown = todayCount;
 
+    standaloneStats.total_staff = Math.max(4, REAL_STAFF_ROSTER.length);
+    standaloneStats.absent_today = Math.max(0, standaloneStats.total_staff - standaloneStats.present_today);
     setT('kpiTotalStaff', standaloneStats.total_staff);
     setT('kpiPresentToday', standaloneStats.present_today);
     setT('kpiCurrentlyInside', standaloneStats.currently_inside);
@@ -3848,4 +3863,100 @@ window.setUserInsideOffice = function() {
         saveAppStateToStorage();
         showNotification('🟢 Status Confirmed: Bhavarth is INSIDE Office (Working)', 'success');
     }
+};
+
+
+// ─── Single-Person Line-by-Line Movement Timeline & Audit ─────────────────────
+let activeTimelineStaffCode = 'TXS-002';
+
+window.onReportFilterChange = function() {
+    const staffSelect = document.getElementById('reportStaffFilter');
+    const selectedCode = staffSelect ? staffSelect.value : 'ALL';
+    if (selectedCode !== 'ALL') {
+        openPersonTimeline(selectedCode);
+    } else {
+        closePersonTimeline();
+    }
+    applyReportFilters();
+};
+
+window.openPersonTimeline = function(staffCode) {
+    activeTimelineStaffCode = staffCode;
+    const staffSelect = document.getElementById('reportStaffFilter');
+    if (staffSelect) staffSelect.value = staffCode;
+
+    const staff = REAL_STAFF_ROSTER.find(s => s.staff_code === staffCode) || REAL_STAFF_ROSTER[1];
+    const section = document.getElementById('personTimelineSection');
+    if (!section || !staff) return;
+
+    section.style.display = 'block';
+
+    const photoEl = document.getElementById('timelineStaffPhoto');
+    const nameEl = document.getElementById('timelineStaffName');
+    const metaEl = document.getElementById('timelineStaffMeta');
+    const firstInEl = document.getElementById('timelineFirstIn');
+    const lastOutEl = document.getElementById('timelineLastOut');
+    const totalWorkEl = document.getElementById('timelineTotalWork');
+    const totalPassEl = document.getElementById('timelineTotalPasses');
+    const tbody = document.getElementById('personTimelineTableBody');
+
+    if (photoEl) photoEl.src = staff.photo_path;
+    if (nameEl) nameEl.textContent = staff.name;
+    if (metaEl) metaEl.textContent = `${staff.staff_code} | ${staff.designation} | Biometric Face ID Active`;
+    if (firstInEl) firstInEl.textContent = staff.in_time || '--:--';
+    if (lastOutEl) lastOutEl.textContent = staff.out_time || (staff.status === 'Working' ? 'Inside (Ongoing)' : '--:--');
+    if (totalWorkEl) totalWorkEl.textContent = formatWorkingHours(staff.live_hours);
+    if (totalPassEl) totalPassEl.textContent = `${(staff.in_count || 0) + (staff.out_count || 0)} Passes`;
+
+    // Filter all events specifically for this person
+    const personEvents = standaloneEvents.filter(e => e.code === staffCode || (e.title && e.title.includes(staff.name)));
+
+    if (!tbody) return;
+    if (personEvents.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align:center; padding: 2rem; color: #94a3b8;">
+                    No line-by-line gate movements recorded yet today for ${escapeHtml(staff.name)}.
+                    Walk through the office door threshold to log in/out timestamps.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    let rowsHtml = '';
+    personEvents.forEach((ev, i) => {
+        const isIN = ev.direction === 'IN';
+        const badgeColor = isIN ? '#10b981' : '#f59e0b';
+        rowsHtml += `
+            <tr>
+                <td style="font-family: monospace; font-weight: 700;">#${personEvents.length - i}</td>
+                <td style="font-family: monospace; font-weight: 700; color: #fff;">${ev.time}</td>
+                <td>
+                    <span style="background: ${isIN ? 'rgba(16,185,129,0.18)' : 'rgba(245,158,11,0.18)'}; color: ${badgeColor}; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.75rem;">
+                        ${isIN ? '🟢 GATE IN (Entered Office)' : '🚪 GATE OUT (Exited Office)'}
+                    </span>
+                </td>
+                <td style="color: #cbd5e1; font-size: 0.78rem;">Gate Camera 01 (Office Door)</td>
+                <td style="font-family: monospace; color: #94a3b8;">${isIN ? 'Session Started' : 'Stepped Out'}</td>
+                <td style="font-family: monospace; font-weight: 700; color: var(--accent-cyan);">${formatWorkingHours(staff.live_hours)}</td>
+                <td>
+                    <span class="status-badge badge-completed" style="font-size: 0.70rem;">✓ Face ID Verified</span>
+                </td>
+            </tr>
+        `;
+    });
+    tbody.innerHTML = rowsHtml;
+    section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+window.closePersonTimeline = function() {
+    const section = document.getElementById('personTimelineSection');
+    if (section) section.style.display = 'none';
+    const staffSelect = document.getElementById('reportStaffFilter');
+    if (staffSelect) staffSelect.value = 'ALL';
+};
+
+window.printPersonAuditReport = function() {
+    window.print();
 };

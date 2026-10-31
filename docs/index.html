@@ -378,7 +378,14 @@
           
           <input type="text" id="reportSearchInput" class="form-control" placeholder="Search by name, designation, code..." style="width: 240px; padding: 0.4rem 0.75rem;" />
 
-          <select id="reportStatusFilter" class="form-control" style="padding: 0.4rem 0.75rem; width: 140px;">
+          <select id="reportStaffFilter" class="form-control" style="padding: 0.4rem 0.75rem; width: 180px;" onchange="onReportFilterChange()">
+            <option value="ALL">👤 All Staff Members</option>
+            <option value="TXS-001">Milan Hidad (TXS-001)</option>
+            <option value="TXS-002">Bhavarth Hapani (TXS-002)</option>
+            <option value="TXS-003">Vishal Morya (TXS-003)</option>
+            <option value="TXS-004">Mahesh Ratod (TXS-004)</option>
+          </select>
+          <select id="reportStatusFilter" class="form-control" style="padding: 0.4rem 0.75rem; width: 140px;" onchange="onReportFilterChange()">
             <option value="ALL">All Status</option>
             <option value="Working">🟢 Working</option>
             <option value="Outside">🚪 Outside Gate</option>
@@ -428,6 +435,7 @@
               <th>Out Time</th>
               <th>Total Working Hours</th>
               <th>Status</th>
+              <th>Line-by-Line Movement</th>
             </tr>
           </thead>
           <tbody id="attendanceTableBody">
@@ -435,6 +443,63 @@
           </tbody>
         </table>
       </div>
+
+      <!-- Line-by-Line Detailed Person Movement Audit Report -->
+      <div id="personTimelineSection" style="display: none; margin-top: 1.5rem; background: rgba(15,23,42,0.9); border: 1px solid rgba(56,189,248,0.3); border-radius: 12px; padding: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.85rem; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+          <div style="display: flex; align-items: center; gap: 0.85rem;">
+            <img id="timelineStaffPhoto" src="" class="staff-thumb" style="width: 48px; height: 48px; border-radius: 8px;" />
+            <div>
+              <h3 id="timelineStaffName" style="color: #fff; font-size: 1.1rem; font-weight: 700; margin: 0;">Staff Name</h3>
+              <p id="timelineStaffMeta" style="color: var(--accent-cyan); font-size: 0.78rem; font-family: monospace; margin: 2px 0 0 0;">Code | Designation</p>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn btn-secondary btn-sm" onclick="printPersonAuditReport()">🖨️ Print Person Report</button>
+            <button class="btn btn-secondary btn-sm" onclick="closePersonTimeline()">✕ Close Timeline</button>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;">
+          <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 8px; border-left: 3px solid #10b981;">
+            <div style="font-size: 0.72rem; color: #94a3b8;">FIRST IN TIME</div>
+            <div id="timelineFirstIn" style="font-size: 1rem; font-weight: 700; color: #34d399; font-family: monospace;">--:--</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 8px; border-left: 3px solid #f59e0b;">
+            <div style="font-size: 0.72rem; color: #94a3b8;">LAST OUT TIME</div>
+            <div id="timelineLastOut" style="font-size: 1rem; font-weight: 700; color: #fbbf24; font-family: monospace;">--:--</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 8px; border-left: 3px solid #06b6d4;">
+            <div style="font-size: 0.72rem; color: #94a3b8;">TOTAL WORKING TIME</div>
+            <div id="timelineTotalWork" style="font-size: 1rem; font-weight: 700; color: #38bdf8; font-family: monospace;">0h 0m</div>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 8px; border-left: 3px solid #a855f7;">
+            <div style="font-size: 0.72rem; color: #94a3b8;">TOTAL GATE CROSSINGS</div>
+            <div id="timelineTotalPasses" style="font-size: 1rem; font-weight: 700; color: #c084fc; font-family: monospace;">0 times</div>
+          </div>
+        </div>
+
+        <h4 style="font-size: 0.88rem; font-weight: 700; color: #e2e8f0; margin-bottom: 0.6rem;">📜 Line-by-Line Movement & Punch Log</h4>
+        <div class="table-container" style="max-height: 320px; overflow-y: auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Event #</th>
+                <th>Time (Note Down)</th>
+                <th>Movement Direction</th>
+                <th>Camera Location</th>
+                <th>Session Duration</th>
+                <th>Cumulative Hours</th>
+                <th>Biometric Status</th>
+              </tr>
+            </thead>
+            <tbody id="personTimelineTableBody">
+              <!-- Chronological lines -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
     <!-- PANE 4: Unknown Visitors Log -->
