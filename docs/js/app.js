@@ -3243,7 +3243,7 @@ function renderStandaloneStaff() {
         html += `
             <div class="kpi-card" style="flex-direction: column; align-items: flex-start; gap: 0.85rem;">
                 <div style="display: flex; gap: 0.85rem; width: 100%; align-items: center;">
-                    <img src="${s.photo_path}" class="staff-thumb" style="width: 54px; height: 54px; border-radius: 10px; object-fit: cover; border: 2px solid rgba(6,182,212,0.4);" onerror="this.src='data/staff_photos/demo_TXS-001.jpg'">
+                    <img src="${s.photo_path}" class="staff-thumb" style="width: 54px; height: 54px; border-radius: 10px; object-fit: cover; border: 2px solid rgba(6,182,212,0.4); cursor: pointer; transition: transform 0.2s;" title="Click to view full size photo" onclick="viewFullPhoto('${s.photo_path}', '${escapeHtml(s.name)} (${s.staff_code})', '${escapeHtml(s.designation)} — Face ID: ${s.face_id}')" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'54\' height=\'54\'><rect width=\'100%\' height=\'100%\' fill=\'%231e293b\'/><text x=\'50%\' y=\'55%\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%2394a3b8\' font-size=\'20\'>👤</text></svg>'">
                     <div style="flex: 1;">
                         <h4 style="font-size: 0.95rem; font-weight: 700; color: #fff;">${escapeHtml(s.name)}</h4>
                         <p style="font-size: 0.78rem; color: var(--accent-cyan); font-weight: 600;">${escapeHtml(s.designation)}</p>
@@ -3959,4 +3959,29 @@ window.closePersonTimeline = function() {
 
 window.printPersonAuditReport = function() {
     window.print();
+};
+
+
+// ─── Click-to-View Full Photo Lightbox ────────────────────────────────────────
+window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle = 'Biometric Reference Photo') {
+    if (!imgSrc) return;
+    const modal = document.getElementById('imageLightboxModal');
+    const img = document.getElementById('lightboxImage');
+    const titleEl = document.getElementById('lightboxTitle');
+    const dateEl = document.getElementById('lightboxDateTime');
+    const subtext = document.getElementById('lightboxSubtext');
+    const toggleBtn = document.getElementById('btnLightboxToggleView');
+    const registerBtn = document.getElementById('btnLightboxRegister');
+    const deleteBtn = document.getElementById('btnLightboxDelete');
+
+    if (img) img.src = imgSrc;
+    if (titleEl) titleEl.textContent = title;
+    if (dateEl) dateEl.textContent = subtitle;
+    if (subtext) subtext.textContent = 'AiCam Biometric Face ID Profile';
+    if (toggleBtn) toggleBtn.style.display = 'none';
+    if (registerBtn) registerBtn.style.display = 'none';
+    if (deleteBtn) deleteBtn.style.display = 'none';
+
+    if (typeof resetLightboxZoom === 'function') resetLightboxZoom();
+    if (modal) modal.style.display = 'flex';
 };
