@@ -96,11 +96,18 @@ function bootApp() {
     try { initModule2(); } catch(e) { console.error('initModule2 err:', e); }
     try { initModule3(); } catch(e) { console.error('initModule3 err:', e); }
 
-    // Ensure counting status starts strictly in STOPPED state on browser load/refresh
-    isStandaloneCounting = false;
-    localStorage.setItem('aicam_counting_active', '0');
-    updateCountingStatusUI(false);
-    showStandbyOverlayImmediate();
+    // Seamless State Persistence: Check if live counting was ACTIVE or STOPPED before refresh
+    const isSavedActive = (localStorage.getItem('aicam_counting_active') === '1');
+    const savedSource = localStorage.getItem('aicam_video_source') || 'webcam';
+
+    isStandaloneCounting = isSavedActive;
+    updateCountingStatusUI(isSavedActive);
+
+    if (isSavedActive) {
+        hideStandbyOverlayImmediate();
+    } else {
+        showStandbyOverlayImmediate();
+    }
 
     // On GitHub Pages or static host without cloud tunnel, boot standalone mode instantly (0ms delay)
     if (isGitHubPages && !cloudBackendUrl) {
@@ -111,6 +118,11 @@ function bootApp() {
     // Auto-detect whether backend is reachable; if not, use standalone real-video engine
     detectBackend().then(hasBackend => {
         if (hasBackend) {
+            if (isSavedActive) {
+                fetch(getApiUrl('/api/video/start_counting'), { method: 'POST' }).catch(()=>{});
+            } else {
+                fetch(getApiUrl('/api/video/stop_counting'), { method: 'POST' }).catch(()=>{});
+            }
             fetchStats();
             fetchRecentEvents();
             fetchTodayReport();
@@ -124,10 +136,10 @@ function bootApp() {
                 }
             }, 500);
         } else {
-            initStandaloneRealVideoMode();
+            initStandaloneRealVideoMode(isSavedActive, savedSource);
         }
     }).catch(() => {
-        initStandaloneRealVideoMode();
+        initStandaloneRealVideoMode(isSavedActive, savedSource);
     });
 }
 
@@ -1078,6 +1090,7 @@ function setupCanvasAutoRedraw() {
 
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
+    localStorage.setItem('aicam_counting_active', '1');
     if (!backendAvailable) {
         standaloneStartCounting();
         return;
@@ -1094,6 +1107,7 @@ window.startLiveCounting = async function() {
 };
 
 window.stopLiveCounting = async function() {
+    localStorage.setItem('aicam_counting_active', '0');
     standaloneStopCounting();
     if (backendAvailable) {
         try {
@@ -2489,33 +2503,47 @@ async function detectBackend() {
 }
 
 // Initialize Standalone Real Video Mode
-function initStandaloneRealVideoMode() {
-    console.log('[AiCam] Initializing Real-Video Vision Engine...');
+function initStandaloneRealVideoMode(isSavedActive = null, savedSourcePref = null) {
+    console.log('[AiCam] Initializing Real-Video Vision Engine with State Persistence...');
     backendAvailable = false;
 
     const img = document.getElementById('cameraStream');
     standaloneVideoEl = document.getElementById('html5VideoPlayer');
-    const standbyOverlay = document.getElementById('cameraStandbyOverlay');
 
     if (img) img.style.display = 'none';
+
+    // Determine persisted source and counting state
+    const savedSource = savedSourcePref || localStorage.getItem('aicam_video_source') || 'webcam';
+    standaloneSource = savedSource;
+
+    const shouldCount = (isSavedActive !== null) ? isSavedActive : (localStorage.getItem('aicam_counting_active') === '1');
+    isStandaloneCounting = shouldCount;
+    standaloneStats.is_counting = shouldCount;
+
     if (standaloneVideoEl) {
         standaloneVideoEl.style.display = 'block';
-        const savedSourcePref = localStorage.getItem('aicam_video_source') || 'webcam';
-        if (savedSourcePref === 'file') {
+        if (savedSource === 'file') {
             standaloneVideoEl.src = 'testing video.mp4';
             standaloneVideoEl.load();
+            if (shouldCount) {
+                standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
+            }
         } else {
             standaloneVideoEl.removeAttribute('src');
             standaloneVideoEl.srcObject = null;
         }
     }
 
-    showStandbyOverlayTemporary();
+    if (shouldCount) {
+        hideStandbyOverlayImmediate();
+    } else {
+        showStandbyOverlayImmediate();
+    }
 
-    // Load persisted counting state, gate line, and roster from localStorage (zero resets on refresh!)
+    // Load persisted counting state, gate line, and roster from localStorage (counts strictly preserved!)
     loadAppStateFromStorage();
 
-    // Render 4 real staff members
+    // Render static data immediately to eliminate flicker
     renderStandaloneStaff();
     renderStandaloneStats();
     renderStandaloneEvents();
@@ -2525,9 +2553,7 @@ function initStandaloneRealVideoMode() {
     // Start video AI analysis loop on gate canvas
     startRealVideoVisionLoop();
 
-    // Check saved source preference (default to 'webcam' for live camera tracking)
-    const savedSource = localStorage.getItem('aicam_video_source') || 'webcam';
-    standaloneSource = savedSource;
+    // Sync UI buttons with current source
     const btnWebcam = document.getElementById('btnSrcWebcam');
     const btnTest = document.getElementById('btnSrcTestVideo');
 
@@ -2539,15 +2565,20 @@ function initStandaloneRealVideoMode() {
         if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
     }
 
-    // By strict user instruction: Live Counting & Camera MUST ALWAYS BE STOPPED on refresh/page load!
-    // Counting ONLY begins when the user explicitly clicks [▶ Start Camera & Live Counting]!
-    isStandaloneCounting = false;
-    standaloneStats.is_counting = false;
-    localStorage.setItem('aicam_counting_active', '0');
-    updateCountingStatusUI(false);
-    showStandbyOverlayImmediate();
-    if (standaloneVideoEl) {
-        standaloneVideoEl.pause();
+    // Apply active state seamlessly without delay
+    updateCountingStatusUI(shouldCount);
+    if (shouldCount) {
+        hideStandbyOverlayImmediate();
+        if (savedSource === 'webcam') {
+            standaloneSetVideoSource('webcam');
+        } else if (standaloneVideoEl) {
+            standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
+        }
+    } else {
+        showStandbyOverlayImmediate();
+        if (standaloneVideoEl) {
+            standaloneVideoEl.pause();
+        }
     }
 
     // Work timer ticker (updates live hours every second)
