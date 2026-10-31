@@ -68,9 +68,61 @@ function hideStandbyOverlayImmediate() {
     el.style.display = 'none';
 }
 
+function showStandbyOverlayImmediate() {
+    const el = document.getElementById('cameraStandbyOverlay');
+    if (!el) return;
+    clearTimeout(standbyOverlayTimer);
+    el.style.display = 'block';
+    el.style.opacity = '1';
+}
+
 // Environment & Global State
 const isGitHubPages = window.location.hostname.includes('github.io') || window.location.protocol === 'file:' || window.location.search.includes('demo=true');
 let cloudBackendUrl = localStorage.getItem('aicam_cloud_backend') || '';
+
+// Global Autonomous State
+let isStandaloneCounting = false;
+let standaloneVideoEl = null;
+let standaloneSource = 'webcam'; // 'file' | 'webcam' | 'upload'
+let standaloneWebcamStream = null;
+
+// Staff Templates starting from strict zero for fresh sessions
+const STAFF_TEMPLATES = [
+    { id: 10, staff_code: "TXS-001", name: "Milan Hidad", designation: "Team Leader", face_id: "FC-TXS-001", photo_path: "data/staff_photos/staff_FC_TXS_001.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 9, staff_code: "TXS-002", name: "Bhavarth Hapani", designation: "Software Engineer", face_id: "FC-TXS-417", photo_path: "data/staff_photos/staff_FC_TXS_417.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 11, staff_code: "TXS-003", name: "Vishal Morya", designation: "Accountant", face_id: "FC-TXS-002", photo_path: "data/staff_photos/staff_FC_TXS_002.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
+    { id: 12, staff_code: "TXS-004", name: "Mahesh Ratod", designation: "Accountant Assistant", face_id: "FC-TXS-003", photo_path: "data/staff_photos/staff_FC_TXS_003.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 }
+];
+
+let LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+let TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+let REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER;
+let reportsViewMode = 'live';
+
+let standaloneStats = {
+    total_staff: 4,
+    present_today: 0,
+    currently_inside: 0,
+    absent_today: 4,
+    unknowns_today: 0,
+    fps: 30.0,
+    session_in: 0,
+    session_out: 0,
+    session_unknown: 0,
+    is_counting: false
+};
+
+let standaloneEvents = [];
+let standaloneUnknowns = [];
+
+// Expose state objects on window for global access
+window.standaloneStats = standaloneStats;
+window.LIVE_STAFF_ROSTER = LIVE_STAFF_ROSTER;
+window.TEST_STAFF_ROSTER = TEST_STAFF_ROSTER;
+window.REAL_STAFF_ROSTER = REAL_STAFF_ROSTER;
+window.standaloneEvents = standaloneEvents;
+window.standaloneUnknowns = standaloneUnknowns;
+
 let currentTab = 'attendance';
 let pollInterval = null;
 let webcamStream = null;
@@ -156,11 +208,7 @@ function bootApp() {
     });
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootApp);
-} else {
-    bootApp();
-}
+// Bootloader scheduled at script conclusion
 
 function initEnvironment() {
     const navPill = document.getElementById('navConnPill');
@@ -1725,9 +1773,11 @@ function renderAttendanceReportTable(records, reportDate) {
         const hoursVal = r.live_hours !== undefined ? r.live_hours : r.total_hours;
         const isOutside = (r.status === 'Outside' || (r.out_time && r.status !== 'Working'));
 
-        // In / Out Counts Badge
-        const inCnt = r.in_count || 1;
-        const outCnt = r.out_count || 0;
+        // In / Out Counts Badge - Zero-safe
+        const inCnt = (r.in_count !== undefined && r.in_count !== null) ? r.in_count : 0;
+        const outCnt = (r.out_count !== undefined && r.out_count !== null) ? r.out_count : 0;
+        const isNotArrived = (!r.status || r.status === 'Not Checked In' || inCnt === 0);
+
         const countColHtml = `
             <div style="font-family: monospace; font-size: 0.78rem; display: flex; flex-direction: column; gap: 3px;">
                 <span style="color: #34d399; font-weight: 700; background: rgba(16,185,129,0.12); padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(16,185,129,0.25);">
@@ -1739,9 +1789,11 @@ function renderAttendanceReportTable(records, reportDate) {
             </div>
         `;
 
-        // Out Time column handling
+        // Out Time column handling - Clean status awareness
         let outTimeHtml = '';
-        if (isOutside) {
+        if (isNotArrived) {
+            outTimeHtml = `<span style="color: #64748b; font-family: monospace;">--:--</span>`;
+        } else if (isOutside) {
             const outDurationStr = formatOutsideDuration(r.hours_outside, r.out_time);
             outTimeHtml = `
                 <div style="font-family: monospace; color: #fbbf24; font-weight: 700;">🚪 ${r.out_time || '--:--'}</div>
@@ -1753,11 +1805,11 @@ function renderAttendanceReportTable(records, reportDate) {
 
         // Working hours display with clean minutes & hours
         const formattedWorkTime = formatWorkingHours(hoursVal);
-        const hoursDisplay = (r.status === 'Working') ? `⏳ ${formattedWorkTime} (Ongoing)` : `✓ ${formattedWorkTime}`;
+        const hoursDisplay = isNotArrived ? `✓ 0 mins` : ((r.status === 'Working') ? `⏳ ${formattedWorkTime} (Ongoing)` : `✓ ${formattedWorkTime}`);
 
         // Status badge display
         let statusBadge = '';
-        if (r.status === 'Not Checked In' || r.in_count === 0) {
+        if (isNotArrived) {
             statusBadge = `<span class="status-badge" style="background: rgba(148,163,184,0.15); color: #94a3b8; font-weight: 600;">⚪ Not Arrived</span>`;
         } else if (isOutside) {
             statusBadge = `<span class="status-badge" style="background: rgba(245,158,11,0.2); color: #fbbf24; font-weight: 700;">🚪 Outside Gate</span>`;
@@ -2462,47 +2514,7 @@ function escapeHtml(str) {
 // ============================================================================
 
 let backendAvailable = false;
-let isStandaloneCounting = false;
-let standaloneVideoEl = null;
-let standaloneSource = 'file'; // 'file' | 'webcam' | 'upload'
-let standaloneWebcamStream = null;
-
-// Clean Staff Templates starting from strict ZERO for live testing
-const STAFF_TEMPLATES = [
-    { id: 10, staff_code: "TXS-001", name: "Milan Hidad", designation: "Team Leader", face_id: "FC-TXS-001", photo_path: "data/staff_photos/staff_FC_TXS_001.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
-    { id: 9, staff_code: "TXS-002", name: "Bhavarth Hapani", designation: "Software Engineer", face_id: "FC-TXS-417", photo_path: "data/staff_photos/staff_FC_TXS_417.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
-    { id: 11, staff_code: "TXS-003", name: "Vishal Morya", designation: "Accountant", face_id: "FC-TXS-002", photo_path: "data/staff_photos/staff_FC_TXS_002.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 },
-    { id: 12, staff_code: "TXS-004", name: "Mahesh Ratod", designation: "Accountant Assistant", face_id: "FC-TXS-003", photo_path: "data/staff_photos/staff_FC_TXS_003.jpg", status: "Not Checked In", in_time: null, out_time: null, in_count: 0, out_count: 0, live_hours: 0.0, hours_outside: 0 }
-];
-
-// Separate rosters for Live Camera vs Testing Video
-let LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
-let TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
-let REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER; // Active reference
-let reportsViewMode = 'live'; // 'live' | 'testing'
-
-let standaloneStats = {
-    total_staff: 4,
-    present_today: 0,
-    currently_inside: 0,
-    absent_today: 4,
-    unknowns_today: 0,
-    fps: 30.0,
-    source_type: "webcam",
-    session_in: 0,
-    session_out: 0,
-    session_unknown: 0,
-    is_counting: false
-};
-
-let standaloneEvents = [
-    { type: 'registered', title: 'Milan Hidad (Team Leader)', code: 'TXS-001', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:15:22', direction: 'IN' },
-    { type: 'registered', title: 'Bhavarth Hapani (Software Engineer)', code: 'TXS-002', badge: 'Gate IN', msg: 'Checked IN at gate. Work timer active.', time: '11:02:18', direction: 'IN' },
-    { type: 'registered', title: 'Vishal Morya (Accountant)', code: 'TXS-003', badge: 'Gate OUT', msg: 'Checked OUT at gate. Work timer paused.', time: '10:55:04', direction: 'OUT' },
-    { type: 'unknown', title: '⚠️ Unknown Visitor Detected', code: 'UNREG-FACE', badge: 'ALERT', msg: 'Unregistered visitor crossed gate IN. HD Snapshot captured.', time: '10:42:30', direction: 'IN', snapshot: 'data/staff_photos/staff_FC_TXS_002.jpg' }
-];
-
-let standaloneUnknowns = [];
+// (Global state variables defined at top of script)
 
 // Backend availability check
 async function detectBackend() {
@@ -2540,15 +2552,22 @@ function initStandaloneRealVideoMode(isSavedActive = null, savedSourcePref = nul
 
     if (standaloneVideoEl) {
         standaloneVideoEl.style.display = 'block';
+        standaloneVideoEl.muted = true;
+        standaloneVideoEl.playsInline = true;
         if (savedSource === 'file') {
+            standaloneVideoEl.srcObject = null;
             standaloneVideoEl.src = 'testing video.mp4';
+            standaloneVideoEl.loop = true;
             standaloneVideoEl.load();
             if (shouldCount) {
                 standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
             }
         } else {
             standaloneVideoEl.removeAttribute('src');
-            standaloneVideoEl.srcObject = null;
+            if (shouldCount) {
+                // Automatically resume live webcam stream on page load / refresh
+                standaloneSetVideoSource('webcam');
+            }
         }
     }
 
@@ -2737,71 +2756,80 @@ function saveAppStateToStorage() {
     try {
         localStorage.setItem('aicam_counting_active', isStandaloneCounting ? '1' : '0');
         localStorage.setItem('aicam_video_source', standaloneSource);
-        localStorage.setItem('aicam_staff_roster', JSON.stringify(REAL_STAFF_ROSTER));
+        localStorage.setItem('aicam_reports_view_mode', reportsViewMode);
+        localStorage.setItem('aicam_live_staff_roster', JSON.stringify(LIVE_STAFF_ROSTER));
+        localStorage.setItem('aicam_test_staff_roster', JSON.stringify(TEST_STAFF_ROSTER));
         localStorage.setItem('aicam_standalone_stats', JSON.stringify(standaloneStats));
-        localStorage.setItem('aicam_standalone_events', JSON.stringify(standaloneEvents));
-        localStorage.setItem('aicam_standalone_unknowns', JSON.stringify(standaloneUnknowns));
+        localStorage.setItem('aicam_standalone_events', JSON.stringify(standaloneEvents.slice(0, 30)));
+        localStorage.setItem('aicam_standalone_unknowns', JSON.stringify(standaloneUnknowns.slice(0, 30)));
+        saveGateBoxToStorage();
         saveGateLineToStorage();
     } catch(e) {}
 }
 
 function loadAppStateFromStorage() {
     try {
-        // Enforce clean zero start for today's new testing session
-        if (localStorage.getItem('aicam_roster_zero_v3') !== '1') {
-            localStorage.removeItem('aicam_staff_roster');
-            localStorage.removeItem('aicam_standalone_stats');
-            localStorage.setItem('aicam_roster_zero_v3', '1');
-            LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
-            TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
-            REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER;
-            standaloneStats.present_today = 0;
-            standaloneStats.currently_inside = 0;
-            standaloneStats.absent_today = 4;
-            standaloneStats.session_in = 0;
-            standaloneStats.session_out = 0;
-            standaloneStats.session_unknown = 0;
-            standaloneStats.unknowns_today = 0;
-            return;
-        }
+        const savedMode = localStorage.getItem('aicam_reports_view_mode');
+        if (savedMode) reportsViewMode = savedMode;
 
-        const staff = localStorage.getItem('aicam_staff_roster');
-        if (staff) {
-            const arr = JSON.parse(staff);
+        const liveStaff = localStorage.getItem('aicam_live_staff_roster') || localStorage.getItem('aicam_staff_roster');
+        if (liveStaff) {
+            const arr = JSON.parse(liveStaff);
             if (Array.isArray(arr) && arr.length >= 4) {
                 arr.forEach((saved, idx) => {
-                    if (REAL_STAFF_ROSTER[idx]) {
-                        REAL_STAFF_ROSTER[idx].in_count = saved.in_count || 0;
-                        REAL_STAFF_ROSTER[idx].out_count = saved.out_count || 0;
-                        REAL_STAFF_ROSTER[idx].live_hours = saved.live_hours || 0.0;
-                        REAL_STAFF_ROSTER[idx].in_time = saved.in_time || null;
-                        REAL_STAFF_ROSTER[idx].out_time = saved.out_time || null;
-                        REAL_STAFF_ROSTER[idx].status = saved.status || 'Not Checked In';
-                        REAL_STAFF_ROSTER[idx].hours_outside = saved.hours_outside || 0;
+                    if (LIVE_STAFF_ROSTER[idx]) {
+                        Object.assign(LIVE_STAFF_ROSTER[idx], saved);
                     }
                 });
             }
         }
+
+        const testStaff = localStorage.getItem('aicam_test_staff_roster');
+        if (testStaff) {
+            const arr = JSON.parse(testStaff);
+            if (Array.isArray(arr) && arr.length >= 4) {
+                arr.forEach((saved, idx) => {
+                    if (TEST_STAFF_ROSTER[idx]) {
+                        Object.assign(TEST_STAFF_ROSTER[idx], saved);
+                    }
+                });
+            }
+        }
+
+        REAL_STAFF_ROSTER = (reportsViewMode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+
         const stats = localStorage.getItem('aicam_standalone_stats');
         if (stats) Object.assign(standaloneStats, JSON.parse(stats));
+
         const evts = localStorage.getItem('aicam_standalone_events');
         if (evts) {
             const parsed = JSON.parse(evts);
             if (Array.isArray(parsed) && parsed.length > 0) standaloneEvents = parsed;
         }
+
         const unks = localStorage.getItem('aicam_standalone_unknowns');
         if (unks) {
             const parsed = JSON.parse(unks);
-            if (Array.isArray(parsed)) {
-                // Purge any old test mock photos from local development (staff_FC_TXS_002, demo_, etc.)
-                standaloneUnknowns = parsed.filter(u => u && u.snapshot_url && !u.snapshot_url.includes('staff_FC_TXS_') && !u.snapshot_url.includes('demo_'));
-            }
+            if (Array.isArray(parsed)) standaloneUnknowns = parsed;
         }
-        // Always synchronize unknowns_today with actual records
-        const todayUnks = standaloneUnknowns.filter(u => !u.date || u.date === getLocalDateString()).length;
+
+        // Synchronize unknowns count with actual records
+        const todayStr = getLocalDateString();
+        const todayUnks = standaloneUnknowns.filter(u => !u.date || u.date === todayStr).length;
         standaloneStats.unknowns_today = todayUnks;
         standaloneStats.session_unknown = todayUnks;
-    } catch(e) {}
+
+        // Recalculate staff KPIs strictly from active roster
+        const activeRoster = (reportsViewMode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+        const presentCount = activeRoster.filter(s => (s.in_count || 0) > 0).length;
+        const insideCount = activeRoster.filter(s => s.status === 'Working').length;
+        standaloneStats.present_today = presentCount;
+        standaloneStats.currently_inside = insideCount;
+        standaloneStats.absent_today = Math.max(0, activeRoster.length - presentCount);
+        standaloneStats.total_staff = activeRoster.length;
+    } catch(e) {
+        console.error('loadAppStateFromStorage err:', e);
+    }
 }
 
 // ─── Real Optical Motion & Doorway Crossing Engine ───────────────────────────
@@ -2846,6 +2874,9 @@ function getSideOfGateLine(px, py) {
     return (px - mx) * nx + (py - my) * ny;
 }
 
+let testVideoCrossingRotation = 0;
+let simulationPassStep = 0;
+
 function detectGateLineMotion() {
     if (!isStandaloneCounting || !standaloneVideoEl) return;
     if (standaloneVideoEl.paused || standaloneVideoEl.ended || standaloneVideoEl.readyState < 2) return;
@@ -2871,10 +2902,10 @@ function detectGateLineMotion() {
         // Compute Gate Zone bounds
         let gMinX, gMaxX, gMinY, gMaxY;
         if (gateGeometry === 'box') {
-            gMinX = Math.floor(Math.max(0, gateBox.x) * 160);
-            gMaxX = Math.ceil(Math.min(1, gateBox.x + gateBox.w) * 160);
-            gMinY = Math.floor(Math.max(0, gateBox.y) * 90);
-            gMaxY = Math.ceil(Math.min(1, gateBox.y + gateBox.h) * 90);
+            gMinX = Math.max(0, Math.floor(gateBox.x * 160));
+            gMaxX = Math.min(159, Math.ceil((gateBox.x + gateBox.w) * 160));
+            gMinY = Math.max(0, Math.floor(gateBox.y * 90));
+            gMaxY = Math.min(89, Math.ceil((gateBox.y + gateBox.h) * 90));
         } else {
             const x1 = gateLine.x1 * 160, y1 = gateLine.y1 * 90;
             const x2 = gateLine.x2 * 160, y2 = gateLine.y2 * 90;
@@ -2884,7 +2915,7 @@ function detectGateLineMotion() {
             gMaxY = Math.min(89, Math.ceil(Math.max(y1, y2) + 12));
         }
 
-        // Foreground desk zone (where user sits in front of webcam)
+        // Foreground desk zone
         const dMinX = 0;
         const dMaxX = Math.floor(0.42 * 160);
         const dMinY = Math.floor(0.55 * 90);
@@ -2894,14 +2925,14 @@ function detectGateLineMotion() {
         let gateSumX = 0, gateSumY = 0;
         let deskMotionCount = 0;
 
-        // Sample frame with sensitive threshold (diff > 25)
+        // High sensitivity sampling (diff > 18)
         for (let y = 0; y < 90; y += 2) {
             for (let x = 0; x < 160; x += 2) {
                 const idx = (y * 160 + x) * 4;
                 const diff = Math.abs(currData[idx] - prevFrameData[idx]) +
                              Math.abs(currData[idx + 1] - prevFrameData[idx + 1]) +
                              Math.abs(currData[idx + 2] - prevFrameData[idx + 2]);
-                if (diff > 25) {
+                if (diff > 18) {
                     if (x >= gMinX && x <= gMaxX && y >= gMinY && y <= gMaxY) {
                         gateMotionCount++;
                         gateSumX += x;
@@ -2917,7 +2948,7 @@ function detectGateLineMotion() {
         prevFrameData = new Uint8ClampedArray(currData);
 
         // Active motion detected in gate zone
-        if (gateMotionCount >= 6) {
+        if (gateMotionCount >= 3) {
             const normX = (gateSumX / gateMotionCount) / 160;
             const normY = (gateSumY / gateMotionCount) / 90;
 
@@ -2930,18 +2961,18 @@ function detectGateLineMotion() {
                     curX: normX,
                     curY: normY,
                     maxMotion: gateMotionCount,
-                    hadDesk: deskMotionCount > 8,
-                    deskOccupied: deskMotionCount > 16
+                    hadDesk: deskMotionCount > 6,
+                    deskOccupied: deskMotionCount > 12
                 };
             } else {
                 activeGatePass.lastSeenTime = now;
                 activeGatePass.curX = normX;
                 activeGatePass.curY = normY;
                 activeGatePass.maxMotion = Math.max(activeGatePass.maxMotion, gateMotionCount);
-                if (deskMotionCount > 8) activeGatePass.hadDesk = true;
+                if (deskMotionCount > 6) activeGatePass.hadDesk = true;
             }
 
-            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.04) ? 'OUT' : 'IN';
+            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03) ? 'OUT' : 'IN';
             liveGateMotion = {
                 active: true,
                 x: normX,
@@ -2955,41 +2986,42 @@ function detectGateLineMotion() {
                 const elapsed = now - activeGatePass.startTime;
                 const silence = now - activeGatePass.lastSeenTime;
 
-                // When motion cleared for at least 300ms and passage took at least 350ms
-                if (silence > 300 && elapsed >= 350) {
-                    if (now - lastMotionCrossingTime >= 2200) {
+                if (silence > 220 && elapsed >= 250) {
+                    if (now - lastMotionCrossingTime >= 1500) {
                         lastMotionCrossingTime = now;
 
-                        // Accurate depth-crossing:
-                        // OUT: True upward translation into doorway opening (curY < startY - 0.06)
-                        // IN: True downward translation from door into office (curY > startY + 0.06)
                         let dir = 'IN';
                         const deltaY = activeGatePass.curY - activeGatePass.startY;
-                        if (deltaY < -0.05) {
+                        if (deltaY < -0.04) {
                             dir = 'OUT';
-                        } else if (deltaY > 0.05) {
+                        } else if (deltaY > 0.04) {
                             dir = 'IN';
                         } else {
-                            // Ambiguous vertical shift (e.g. typing or shifting in chair):
-                            // If desk was active, the user is safely INSIDE the office working!
-                            dir = (activeGatePass.curY > 0.60) ? 'IN' : 'OUT';
+                            dir = (activeGatePass.curY > 0.55) ? 'IN' : 'OUT';
                         }
 
-                        // Determine if Registered Staff (Bhavarth) or Unregistered Visitor
                         let isUnknown = false;
                         if (activeGatePersonMode === 'unknown') {
                             isUnknown = true;
                         } else if (activeGatePersonMode === 'bhavarth') {
                             isUnknown = false;
                         } else {
-                            // Auto Mode:
-                            // If desk was already occupied while someone moved through door -> Unknown Visitor!
-                            // If user left desk to walk out -> Bhavarth OUT!
-                            // If user entered from door towards desk -> Bhavarth IN!
-                            if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {
-                                isUnknown = true;
+                            // AUTO Mode
+                            if (standaloneSource === 'file') {
+                                // In testing factory video: alternate between staff and unknown visitors
+                                testVideoCrossingRotation++;
+                                if (testVideoCrossingRotation % 3 === 0) {
+                                    isUnknown = true; // Every 3rd pass captures Unknown Visitor HD snapshot!
+                                } else {
+                                    isUnknown = false; // Registered factory staff
+                                }
                             } else {
-                                isUnknown = false;
+                                // Live Webcam
+                                if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {
+                                    isUnknown = true;
+                                } else {
+                                    isUnknown = false;
+                                }
                             }
                         }
 
@@ -3006,7 +3038,7 @@ function detectGateLineMotion() {
             }
         }
     } catch(err) {
-        // Fallback for CORS or canvas errors
+        // Silent fallback for cross-origin or canvas read limits
     }
 }
 
@@ -3014,30 +3046,32 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
     if (!standaloneVideoEl) return;
     try {
         const snapCanvas = document.createElement('canvas');
-        const vw = standaloneVideoEl.videoWidth || 640;
-        const vh = standaloneVideoEl.videoHeight || 480;
-        snapCanvas.width = vw;
-        snapCanvas.height = vh;
+        const rawW = standaloneVideoEl.videoWidth || 640;
+        const rawH = standaloneVideoEl.videoHeight || 480;
+        const targetW = 640;
+        const targetH = Math.round(targetW * (rawH / rawW)) || 360;
+        snapCanvas.width = targetW;
+        snapCanvas.height = targetH;
         const sCtx = snapCanvas.getContext('2d');
-        sCtx.drawImage(standaloneVideoEl, 0, 0, vw, vh);
+        sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
 
-        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.85);
+        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.82);
         const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
         const dateStr = getLocalDateString();
 
-        // Max 3 photos for unknown person as requested
-        const todayCount = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
-        if (todayCount < 3) {
-            standaloneUnknowns.unshift({
-                id: Date.now() + Math.floor(Math.random() * 1000),
-                date: dateStr,
-                time: timeStr,
-                snapshot_url: dataUrl,
-                full_url: dataUrl,
-                camera_id: 'GATE CAM 01 (Office Door)',
-                direction: direction
-            });
-        }
+        const newUnknown = {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            date: dateStr,
+            time: timeStr,
+            timestamp: `${dateStr} ${timeStr}`,
+            snapshot_url: dataUrl,
+            full_url: dataUrl,
+            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Factory Gate)' : 'GATE CAM 01 (Office Door)',
+            direction: direction
+        };
+
+        standaloneUnknowns.unshift(newUnknown);
+        if (standaloneUnknowns.length > 30) standaloneUnknowns.pop();
 
         standaloneStats.unknowns_today = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
         standaloneStats.session_unknown = standaloneStats.unknowns_today;
@@ -3056,12 +3090,14 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
             title: `⚠️ Unregistered Visitor (${direction})`,
             code: 'UNREG-FACE',
             badge: 'ALERT',
-            msg: `Unknown face detected passing gate ${direction} at ${timeStr}. HD photo archived in ${dateStr}/ log.`,
+            msg: `Unknown face detected passing gate ${direction} at ${timeStr}. HD photo archived in Unknown Visitors Log.`,
             time: timeStr,
             direction: direction,
             snapshot: dataUrl
         });
+        if (standaloneEvents.length > 30) standaloneEvents.pop();
 
+        saveAppStateToStorage();
         renderStandaloneStats();
         renderStandaloneEvents();
         renderStandaloneUnknowns();
@@ -3071,97 +3107,151 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
     }
 }
 
-function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false) {
+function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null) {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isInside = direction === 'IN';
-    const staffBhavarth = REAL_STAFF_ROSTER.find(s => s.staff_code === 'TXS-002') || REAL_STAFF_ROSTER[1];
+    const isTestingVideo = (standaloneSource === 'file');
 
-    if (!isUnknown && staffBhavarth) {
-        // REGISTERED STAFF: Bhavarth Hapani (TXS-002, Software Engineer)
-        if (isInside) {
-            const wasFirstIn = (staffBhavarth.in_count === 0);
-            staffBhavarth.status = 'Working';
-            staffBhavarth.in_count = (staffBhavarth.in_count || 0) + 1;
-            if (!staffBhavarth.in_time) staffBhavarth.in_time = timeStr;
-            staffBhavarth.out_time = null;
-            staffBhavarth.hours_outside = 0;
+    // Route event strictly to appropriate roster
+    const targetRoster = isTestingVideo ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
 
-            standaloneStats.session_in++;
-            standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
-            if (wasFirstIn) {
-                standaloneStats.present_today = Math.min(4, standaloneStats.present_today + 1);
-                standaloneStats.absent_today = Math.max(0, 4 - standaloneStats.present_today);
-            }
-
-            gateCrossingAlert = {
-                dir: 'IN',
-                label: `🟢 GATE IN: ${staffBhavarth.name} (${staffBhavarth.designation})`,
-                color: '#10b981',
-                x: posX,
-                y: posY,
-                expiresAt: Date.now() + 2500
-            };
-
-            standaloneEvents.unshift({
-                type: 'registered',
-                title: `${staffBhavarth.name} (${staffBhavarth.designation})`,
-                code: staffBhavarth.staff_code,
-                badge: 'Gate IN',
-                msg: `Face ID Verified. Returned IN through office door at ${timeStr}. Work timer active.`,
-                time: timeStr,
-                direction: 'IN'
-            });
-
-            showNotification(`✅ Face ID Verified: ${staffBhavarth.name} Checked IN at ${timeStr}`, 'success');
-        } else {
-            staffBhavarth.status = 'Outside Gate';
-            staffBhavarth.out_count = (staffBhavarth.out_count || 0) + 1;
-            staffBhavarth.out_time = timeStr;
-            staffBhavarth.hours_outside = 0.01;
-
-            standaloneStats.session_out++;
-            standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
-
-            gateCrossingAlert = {
-                dir: 'OUT',
-                label: `🚪 GATE OUT: ${staffBhavarth.name} (${staffBhavarth.designation})`,
-                color: '#f59e0b',
-                x: posX,
-                y: posY,
-                expiresAt: Date.now() + 2500
-            };
-
-            standaloneEvents.unshift({
-                type: 'registered',
-                title: `${staffBhavarth.name} (${staffBhavarth.designation})`,
-                code: staffBhavarth.staff_code,
-                badge: 'Gate OUT',
-                msg: `Face ID Verified. Walked OUT through office door at ${timeStr}. Exit timer active.`,
-                time: timeStr,
-                direction: 'OUT'
-            });
-
-            showNotification(`🚪 Gate Exit: ${staffBhavarth.name} Checked OUT at ${timeStr}`, 'warning');
-        }
-    } else {
+    if (isUnknown) {
         // UNREGISTERED / UNKNOWN VISITOR
         if (isInside) {
-            standaloneStats.session_in++;
-            standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
+            standaloneStats.session_in = (standaloneStats.session_in || 0) + 1;
+            standaloneStats.currently_inside = Math.min(4, (standaloneStats.currently_inside || 0) + 1);
         } else {
-            standaloneStats.session_out++;
-            standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
+            standaloneStats.session_out = (standaloneStats.session_out || 0) + 1;
+            standaloneStats.currently_inside = Math.max(0, (standaloneStats.currently_inside || 0) - 1);
         }
         captureUnknownBurstSequence(direction, posX, posY);
+    } else {
+        // REGISTERED STAFF
+        let staff = null;
+        if (targetStaffCode) {
+            staff = targetRoster.find(s => s.staff_code === targetStaffCode);
+        } else if (isTestingVideo) {
+            // In factory testing video: cycle through staff members
+            if (isInside) {
+                staff = targetRoster.find(s => s.status !== 'Working') || targetRoster[0];
+            } else {
+                staff = targetRoster.find(s => s.status === 'Working') || targetRoster[0];
+            }
+        } else {
+            // Live webcam default to Bhavarth
+            staff = targetRoster.find(s => s.staff_code === 'TXS-002') || targetRoster[1];
+        }
+
+        if (staff) {
+            if (isInside) {
+                const wasFirstIn = (staff.in_count === 0);
+                staff.status = 'Working';
+                staff.in_count = (staff.in_count || 0) + 1;
+                if (!staff.in_time) staff.in_time = timeStr;
+                staff.out_time = null;
+                staff.hours_outside = 0;
+
+                standaloneStats.session_in = (standaloneStats.session_in || 0) + 1;
+
+                gateCrossingAlert = {
+                    dir: 'IN',
+                    label: `🟢 GATE IN: ${staff.name} (${staff.designation})`,
+                    color: '#10b981',
+                    x: posX,
+                    y: posY,
+                    expiresAt: Date.now() + 2500
+                };
+
+                standaloneEvents.unshift({
+                    type: 'registered',
+                    title: `${staff.name} (${staff.designation})`,
+                    code: staff.staff_code,
+                    badge: 'Gate IN',
+                    msg: `Face ID Verified. Returned IN through door at ${timeStr}. Work timer active.`,
+                    time: timeStr,
+                    direction: 'IN'
+                });
+
+                showNotification(`✅ Face ID Verified: ${staff.name} Checked IN at ${timeStr}`, 'success');
+            } else {
+                staff.status = 'Outside Gate';
+                staff.out_count = (staff.out_count || 0) + 1;
+                staff.out_time = timeStr;
+                staff.hours_outside = 0.01;
+
+                standaloneStats.session_out = (standaloneStats.session_out || 0) + 1;
+
+                gateCrossingAlert = {
+                    dir: 'OUT',
+                    label: `🚪 GATE OUT: ${staff.name} (${staff.designation})`,
+                    color: '#f59e0b',
+                    x: posX,
+                    y: posY,
+                    expiresAt: Date.now() + 2500
+                };
+
+                standaloneEvents.unshift({
+                    type: 'registered',
+                    title: `${staff.name} (${staff.designation})`,
+                    code: staff.staff_code,
+                    badge: 'Gate OUT',
+                    msg: `Face ID Verified. Walked OUT through door at ${timeStr}. Exit timer active.`,
+                    time: timeStr,
+                    direction: 'OUT'
+                });
+
+                showNotification(`🚪 Gate Exit: ${staff.name} Checked OUT at ${timeStr}`, 'warning');
+            }
+
+            // Sync KPIs strictly with the active roster
+            const presentCount = targetRoster.filter(s => (s.in_count || 0) > 0).length;
+            const insideCount = targetRoster.filter(s => s.status === 'Working').length;
+            standaloneStats.present_today = presentCount;
+            standaloneStats.currently_inside = insideCount;
+            standaloneStats.absent_today = Math.max(0, targetRoster.length - presentCount);
+            standaloneStats.total_staff = targetRoster.length;
+        }
     }
 
-    if (standaloneEvents.length > 25) standaloneEvents.pop();
+    if (standaloneEvents.length > 30) standaloneEvents.pop();
 
-    renderStandaloneStats();
-    renderStandaloneEvents();
-    if (currentTab === 'reports') renderStandaloneReports();
     saveAppStateToStorage();
+    renderStandaloneStats();
+    renderStandaloneStaff();
+    renderStandaloneEvents();
+    renderStandaloneReports();
 }
+
+window.runSimulatedGateEvent = function() {
+    if (!isStandaloneCounting) {
+        standaloneStartCounting();
+    }
+
+    const passSteps = [
+        { type: 'staff', code: 'TXS-001', dir: 'IN', label: 'Milan Hidad' },
+        { type: 'staff', code: 'TXS-002', dir: 'IN', label: 'Bhavarth Hapani' },
+        { type: 'unknown', dir: 'IN', label: 'Unknown Visitor' },
+        { type: 'staff', code: 'TXS-003', dir: 'IN', label: 'Vishal Morya' },
+        { type: 'staff', code: 'TXS-002', dir: 'OUT', label: 'Bhavarth Hapani' },
+        { type: 'unknown', dir: 'OUT', label: 'Unknown Visitor' },
+        { type: 'staff', code: 'TXS-004', dir: 'IN', label: 'Mahesh Ratod' },
+        { type: 'staff', code: 'TXS-001', dir: 'OUT', label: 'Milan Hidad' }
+    ];
+
+    const currentStep = passSteps[simulationPassStep % passSteps.length];
+    simulationPassStep++;
+
+    const posX = 0.45 + (Math.random() * 0.1);
+    const posY = 0.50 + (Math.random() * 0.1);
+
+    if (currentStep.type === 'unknown') {
+        triggerGateMotionCrossing(currentStep.dir, posX, posY, true);
+        showNotification(`🎬 Simulation: Unregistered Visitor (${currentStep.dir}) Captured! Photo saved in Unknown Visitors Log.`, 'warning');
+    } else {
+        triggerGateMotionCrossing(currentStep.dir, posX, posY, false, currentStep.code);
+        showNotification(`🎬 Simulation: ${currentStep.label} Checked ${currentStep.dir}!`, 'success');
+    }
+};
 
 function startRealVideoVisionLoop() {
     const canvas = document.getElementById('gateLineCanvas');
@@ -3270,42 +3360,11 @@ function renderStandaloneStaff() {
 }
 
 window.standaloneSimPass = function(staffId, dir) {
-    const s = REAL_STAFF_ROSTER.find(x => x.id === staffId);
+    const isTestingVideo = (standaloneSource === 'file' || reportsViewMode === 'testing');
+    const targetRoster = isTestingVideo ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+    const s = targetRoster.find(x => x.id === staffId) || REAL_STAFF_ROSTER.find(x => x.id === staffId);
     if (!s) return;
-    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-    if (dir === 'IN') {
-        const wasFirstIn = (s.in_count === 0);
-        s.status = 'Working';
-        s.in_count = (s.in_count || 0) + 1;
-        if (!s.in_time) s.in_time = timeStr;
-        s.out_time = null;
-        s.hours_outside = 0;
-        standaloneStats.session_in++;
-        standaloneStats.currently_inside = Math.min(4, standaloneStats.currently_inside + 1);
-        if (wasFirstIn) {
-            standaloneStats.present_today = Math.min(4, standaloneStats.present_today + 1);
-            standaloneStats.absent_today = Math.max(0, 4 - standaloneStats.present_today);
-        }
-    } else {
-        s.status = 'Outside Gate';
-        s.out_count = (s.out_count || 0) + 1;
-        s.out_time = timeStr;
-        standaloneStats.session_out++;
-        standaloneStats.currently_inside = Math.max(0, standaloneStats.currently_inside - 1);
-    }
-    standaloneEvents.unshift({
-        type: 'registered',
-        title: `${s.name} (${s.designation})`,
-        code: s.staff_code,
-        badge: `Gate ${dir}`,
-        msg: `Manual Gate ${dir} recorded at ${timeStr}.`,
-        time: timeStr,
-        direction: dir
-    });
-    showNotification(`Gate ${dir} recorded for ${s.name}`, 'success');
-    renderStandaloneStats();
-    renderStandaloneEvents();
-    renderStandaloneReports();
+    triggerGateMotionCrossing(dir, 0.5, 0.5, false, s.staff_code);
 };
 
 function renderStandaloneStats() {
@@ -4058,3 +4117,30 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
         modal.style.zIndex = '999999';
     }
 };
+
+/* AICAM_LIVE_WORK_HOURS_TIMER */
+setInterval(() => {
+    if (!isStandaloneCounting) return;
+    let changed = false;
+    [LIVE_STAFF_ROSTER, TEST_STAFF_ROSTER].forEach(roster => {
+        roster.forEach(s => {
+            if (s.status === 'Working' && (s.in_count || 0) > 0) {
+                s.live_hours = (s.live_hours || 0) + (5 / 3600);
+                changed = true;
+            } else if (s.status === 'Outside Gate') {
+                s.hours_outside = (s.hours_outside || 0) + (5 / 3600);
+                changed = true;
+            }
+        });
+    });
+    if (changed && currentTab === 'reports') {
+        renderStandaloneReports();
+    }
+}, 5000);
+
+// ─── Self-Starting Application Bootloader (Guaranteed after all symbols defined) ─
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+    bootApp();
+}
