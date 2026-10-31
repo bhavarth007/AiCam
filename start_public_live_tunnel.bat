@@ -1,7 +1,7 @@
 @echo off
-title TexVision AI Camera - Public Live Cloud Access
+title AiCam Camera - Public Live Cloud Access
 echo ========================================================
-echo   TexVision AI Camera - Cloud Access Portal
+echo   AiCam Camera - Cloud Access Portal
 echo   Sharing local AI Vision stream securely to the Internet
 echo ========================================================
 echo.

@@ -1,6 +1,6 @@
 @echo off
 echo ========================================================
-echo   TexVision AI Camera - One-Click GitHub & GitPages Push
+echo   AiCam Camera - One-Click GitHub & GitPages Push
 echo ========================================================
 echo.
 echo Syncing docs folder for GitHub Pages...
