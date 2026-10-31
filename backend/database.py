@@ -126,6 +126,97 @@ def init_db():
     )
     """)
 
+    # 7. Universal Camera Registry
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cameras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_id TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        connection_type TEXT NOT NULL,
+        ip_address TEXT,
+        port INTEGER DEFAULT 554,
+        username TEXT,
+        password_enc TEXT,
+        channel INTEGER DEFAULT 1,
+        rtsp_path TEXT,
+        stream_quality TEXT DEFAULT 'sub',
+        main_rtsp_url TEXT,
+        sub_rtsp_url TEXT,
+        status TEXT DEFAULT 'disconnected',
+        fps REAL DEFAULT 0.0,
+        latency_ms REAL DEFAULT 0.0,
+        last_error TEXT,
+        last_seen TEXT,
+        is_active INTEGER DEFAULT 1,
+        assigned_module TEXT DEFAULT 'attendance',
+        geometry_config TEXT,
+        tenant_id TEXT DEFAULT 'default',
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    # 8. Staff Reference Photos (Multi-Angle Biometric Enrollment)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS staff_reference_photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        staff_id INTEGER NOT NULL,
+        pose_type TEXT NOT NULL,
+        photo_path TEXT NOT NULL,
+        face_embedding TEXT,
+        quality_score REAL DEFAULT 1.0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (staff_id) REFERENCES staff (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 9. Product Categories & Detection Classes
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS product_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_code TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        yolo_class_id INTEGER,
+        yolo_class_name TEXT,
+        color_hex TEXT DEFAULT '#06b6d4',
+        tenant_id TEXT DEFAULT 'default',
+        created_at TEXT NOT NULL
+    )
+    """)
+
+    # 10. Product Counting Live Events
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS product_counting_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        camera_id TEXT NOT NULL,
+        product_category TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        track_id INTEGER,
+        confidence REAL DEFAULT 0.0,
+        quantity INTEGER DEFAULT 1,
+        shift_name TEXT DEFAULT 'General',
+        timestamp TEXT NOT NULL,
+        date TEXT NOT NULL,
+        snapshot_path TEXT,
+        tenant_id TEXT DEFAULT 'default'
+    )
+    """)
+
+    # 11. Commercial Tenants & Module Licensing
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tenants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT UNIQUE NOT NULL,
+        company_name TEXT NOT NULL,
+        contact_email TEXT,
+        attendance_enabled INTEGER DEFAULT 1,
+        counting_enabled INTEGER DEFAULT 1,
+        max_cameras INTEGER DEFAULT 8,
+        api_key TEXT UNIQUE,
+        created_at TEXT NOT NULL
+    )
+    """)
 
     conn.commit()
     conn.close()
@@ -606,3 +697,190 @@ def clear_all_test_data(clear_staff: bool = False):
         # Delete demo seed staff TXS-001 through TXS-005
         cursor.execute("DELETE FROM staff WHERE staff_code LIKE 'TXS-00%'")
     return True
+
+
+# ----------------- Commercial Platform: Camera Registry -----------------
+
+def add_camera(data: Dict[str, Any]) -> str:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Generate camera_id if not present
+    camera_id = data.get("camera_id")
+    if not camera_id:
+        cursor.execute("SELECT COUNT(*) FROM cameras")
+        count = cursor.fetchone()[0] + 1
+        camera_id = f"cam_{count:02d}"
+
+    cursor.execute("""
+        INSERT INTO cameras (
+            camera_id, name, brand, connection_type, ip_address, port, username, password_enc,
+            channel, rtsp_path, stream_quality, main_rtsp_url, sub_rtsp_url, status,
+            is_active, assigned_module, geometry_config, tenant_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 1, ?, ?, ?, ?)
+    """, (
+        camera_id,
+        data.get("name") or f"Camera {camera_id}",
+        data.get("brand", "generic_rtsp"),
+        data.get("connection_type", "rtsp"),
+        data.get("ip_address", "127.0.0.1"),
+        int(data.get("port") or 554),
+        data.get("username", "admin"),
+        data.get("password", ""),
+        int(data.get("channel") or 1),
+        data.get("rtsp_path", ""),
+        data.get("stream_quality", "sub"),
+        data.get("main_rtsp_url", ""),
+        data.get("sub_rtsp_url", ""),
+        data.get("assigned_module", "attendance"),
+        data.get("geometry_config", "{}"),
+        data.get("tenant_id", "default"),
+        now_str
+    ))
+    conn.commit()
+    conn.close()
+    return camera_id
+
+def get_all_cameras(tenant_id: str = "default") -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, camera_id, name, brand, connection_type, ip_address, port,
+               username, channel, rtsp_path, stream_quality, main_rtsp_url, sub_rtsp_url,
+               status, fps, latency_ms, last_error, last_seen, is_active, assigned_module,
+               geometry_config, tenant_id, created_at
+        FROM cameras WHERE is_active = 1 AND tenant_id = ? ORDER BY id ASC
+    """, (tenant_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_camera_by_id(camera_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM cameras WHERE camera_id = ?", (camera_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_camera(camera_id: str, updates: Dict[str, Any]) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    fields = []
+    params = []
+    for k, v in updates.items():
+        if k in ("name", "brand", "connection_type", "ip_address", "port", "username",
+                 "password_enc", "channel", "rtsp_path", "stream_quality", "main_rtsp_url",
+                 "sub_rtsp_url", "status", "assigned_module", "geometry_config", "is_active"):
+            fields.append(f"{k} = ?")
+            params.append(v)
+    if not fields:
+        conn.close()
+        return False
+    params.append(camera_id)
+    cursor.execute(f"UPDATE cameras SET {', '.join(fields)} WHERE camera_id = ?", tuple(params))
+    conn.commit()
+    conn.close()
+    return True
+
+def delete_camera(camera_id: str) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE cameras SET is_active = 0 WHERE camera_id = ?", (camera_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+def update_camera_status(camera_id: str, status: str, fps: float, latency_ms: float, last_error: str = ""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        UPDATE cameras
+        SET status = ?, fps = ?, latency_ms = ?, last_error = ?, last_seen = ?
+        WHERE camera_id = ?
+    """, (status, round(fps, 1), round(latency_ms, 1), last_error, now_str, camera_id))
+    conn.commit()
+    conn.close()
+
+# ----------------- Multi-Angle Staff Reference Photos -----------------
+
+def add_staff_reference_photo(staff_id: int, pose_type: str, photo_path: str, face_embedding: Optional[List[float]], quality_score: float = 1.0) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    emb_json = json.dumps(face_embedding) if face_embedding is not None else None
+    cursor.execute("""
+        INSERT INTO staff_reference_photos (staff_id, pose_type, photo_path, face_embedding, quality_score, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (staff_id, pose_type, photo_path, emb_json, quality_score, now_str))
+    photo_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return photo_id
+
+def get_staff_reference_photos(staff_id: int) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, staff_id, pose_type, photo_path, quality_score, created_at
+        FROM staff_reference_photos WHERE staff_id = ? ORDER BY id ASC
+    """, (staff_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def delete_staff_reference_photo(photo_id: int) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM staff_reference_photos WHERE id = ?", (photo_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+# ----------------- Product Counting & Category Operations -----------------
+
+def get_product_categories(tenant_id: str = "default") -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM product_categories WHERE tenant_id = ? ORDER BY id ASC", (tenant_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def record_product_counting_event(camera_id: str, category: str, direction: str, track_id: int, confidence: float, quantity: int = 1, shift_name: str = "General", snapshot_path: str = "", tenant_id: str = "default"):
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    date_str = now.strftime("%Y-%m-%d")
+    cursor.execute("""
+        INSERT INTO product_counting_events (camera_id, product_category, direction, track_id, confidence, quantity, shift_name, timestamp, date, snapshot_path, tenant_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (camera_id, category, direction, track_id, confidence, quantity, shift_name, now_str, date_str, snapshot_path, tenant_id))
+    conn.commit()
+    conn.close()
+
+def get_product_counting_summary(date_str: Optional[str] = None, tenant_id: str = "default") -> Dict[str, Any]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+    cursor.execute("""
+        SELECT product_category, SUM(quantity) as total_qty
+        FROM product_counting_events
+        WHERE date = ? AND tenant_id = ?
+        GROUP BY product_category
+    """, (target_date, tenant_id))
+    rows = cursor.fetchall()
+    category_totals = {r["product_category"]: r["total_qty"] for r in rows}
+
+    cursor.execute("SELECT SUM(quantity) FROM product_counting_events WHERE date = ? AND tenant_id = ?", (target_date, tenant_id))
+    grand_total = cursor.fetchone()[0] or 0
+
+    conn.close()
+    return {
+        "date": target_date,
+        "total_counted_today": grand_total,
+        "category_totals": category_totals
+    }

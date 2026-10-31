@@ -39,6 +39,10 @@ class GateTrackingEngine:
         self.count_out = 0
         self.count_unknown = 0
 
+        # Geometry mode: 'line' or 'box'
+        self.geometry_mode = "box"
+        self.door_box = {"x": 0.170, "y": 0.150, "w": 0.255, "h": 0.800}
+
         # Recent live event feed for UI
         self.recent_events: List[Dict[str, Any]] = []
 
@@ -60,6 +64,17 @@ class GateTrackingEngine:
             self.line_y1_norm = 0.0
             self.line_x2_norm = self.line_pos_ratio
             self.line_y2_norm = 1.0
+
+    def set_geometry_mode(self, mode: str):
+        self.geometry_mode = "box" if mode == "box" else "line"
+
+    def set_door_box(self, x: float, y: float, w: float, h: float):
+        self.door_box = {
+            "x": max(0.0, min(0.9, x)),
+            "y": max(0.0, min(0.9, y)),
+            "w": max(0.05, min(0.95, w)),
+            "h": max(0.05, min(0.95, h))
+        }
 
     def set_line_coords(self, x1n: float, y1n: float, x2n: float, y2n: float):
         """
@@ -106,13 +121,24 @@ class GateTrackingEngine:
         return "INSIDE" if cross >= 0 else "OUTSIDE"
 
     def determine_side(self, cx: float, cy: float, width: int, height: int) -> str:
-        """Determine which side of the gate line the point (cx, cy) is on."""
-        # Convert normalized line endpoints to pixels
-        lx1 = self.line_x1_norm * width
-        ly1 = self.line_y1_norm * height
-        lx2 = self.line_x2_norm * width
-        ly2 = self.line_y2_norm * height
-        return self._point_side_of_line(cx, cy, lx1, ly1, lx2, ly2)
+        """Determine which side of the gate line or doorway box the ground/foot point (cx, cy) is on."""
+        norm_x = cx / max(1, width)
+        norm_y = cy / max(1, height)
+
+        if self.geometry_mode == "box":
+            # In doorway box mode:
+            # Bottom edge of door box marks the office threshold.
+            # Foot position below box bottom = INSIDE office
+            # Foot position inside/above box bottom = OUTSIDE door
+            threshold_y = self.door_box["y"] + self.door_box["h"] * 0.85
+            return "INSIDE" if norm_y >= threshold_y else "OUTSIDE"
+        else:
+            # Convert normalized line endpoints to pixels
+            lx1 = self.line_x1_norm * width
+            ly1 = self.line_y1_norm * height
+            lx2 = self.line_x2_norm * width
+            ly2 = self.line_y2_norm * height
+            return self._point_side_of_line(cx, cy, lx1, ly1, lx2, ly2)
 
     # ─── Cooldown Lock System ─────────────────────────────────────────────────
 

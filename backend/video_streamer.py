@@ -277,8 +277,9 @@ class VideoStreamManager:
                         for idx, box in enumerate(boxes):
                             tid = int(track_ids[idx])
                             kp = kpts[idx] if idx < len(kpts) else np.zeros((17, 3))
-                            cx = (box[0] + box[2]) / 2.0
-                            cy = (box[1] + box[3]) / 2.0
+                            # Calculate Ground-Plane reference point (feet contact on floor)
+                            foot_x = (box[0] + box[2]) / 2.0
+                            foot_y = float(box[3])
 
                             p_info = self.face_engine.process_person_detection(
                                 frame, box.tolist(), kp, capture_unknown=False)
@@ -286,7 +287,7 @@ class VideoStreamManager:
                             p_info["person_box"] = box.tolist()
 
                             if self.counting_active and not self.is_paused:
-                                self.tracking_engine.process_crossing(tid, cx, cy, w, h, p_info)
+                                self.tracking_engine.process_crossing(tid, foot_x, foot_y, w, h, p_info)
 
                             detections.append(p_info)
 

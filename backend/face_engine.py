@@ -38,17 +38,51 @@ class FaceRecognitionEngine:
         print(f"[FaceEngine] Initialized successfully on {self.device}. Loaded {len(self.registered_faces)} staff embeddings.")
 
     def reload_registered_staff(self):
-        """Reload staff list and cached face embeddings from database."""
+        """Reload staff list and cached face embeddings from database, including multi-angle reference photos."""
+        import json
         staff_list = get_staff_with_embeddings()
         valid_staff = []
+
+        ref_by_staff = {}
+        try:
+            from backend.database import get_connection
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT staff_id, pose_type, face_embedding, quality_score FROM staff_reference_photos")
+            for row in cursor.fetchall():
+                sid = row["staff_id"]
+                if row["face_embedding"]:
+                    try:
+                        vec = json.loads(row["face_embedding"])
+                        np_vec = np.array(vec, dtype=np.float32)
+                        norm = np.linalg.norm(np_vec)
+                        if norm > 0:
+                            np_vec /= norm
+                        ref_by_staff.setdefault(sid, []).append(np_vec)
+                    except Exception:
+                        pass
+            conn.close()
+        except Exception as e:
+            print(f"[FaceEngine] Error loading reference photos: {e}")
+
         for s in staff_list:
+            embeddings = []
             if s.get("face_embedding") and len(s["face_embedding"]) > 0:
-                s["embedding_np"] = np.array(s["face_embedding"], dtype=np.float32)
-                # Ensure L2 normalized
-                norm = np.linalg.norm(s["embedding_np"])
+                np_vec = np.array(s["face_embedding"], dtype=np.float32)
+                norm = np.linalg.norm(np_vec)
                 if norm > 0:
-                    s["embedding_np"] /= norm
+                    np_vec /= norm
+                embeddings.append(np_vec)
+                s["embedding_np"] = np_vec
+
+            sid = s.get("id")
+            if sid in ref_by_staff:
+                embeddings.extend(ref_by_staff[sid])
+
+            if embeddings:
+                s["multi_embeddings"] = embeddings
                 valid_staff.append(s)
+
         self.registered_faces = valid_staff
         return len(self.registered_faces)
 
@@ -131,12 +165,13 @@ class FaceRecognitionEngine:
         best_match = None
 
         for staff in self.registered_faces:
-            if "embedding_np" in staff and staff["embedding_np"] is not None:
-                # Cosine similarity for normalized vectors is simple dot product
-                sim = float(np.dot(face_emb, staff["embedding_np"]))
-                if sim > best_score:
-                    best_score = sim
-                    best_match = staff
+            # Multi-angle search: evaluates front, left, right, upper, lower poses
+            for ref_emb in staff.get("multi_embeddings", [staff.get("embedding_np")]):
+                if ref_emb is not None:
+                    sim = float(np.dot(face_emb, ref_emb))
+                    if sim > best_score:
+                        best_score = sim
+                        best_match = staff
 
         # Threshold check
         if best_score >= FACE_MATCH_THRESHOLD and best_match is not None:

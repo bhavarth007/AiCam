@@ -26,6 +26,14 @@ from backend.database import (
 from backend.face_engine import FaceRecognitionEngine
 from backend.tracking_engine import GateTrackingEngine
 from backend.video_streamer import VideoStreamManager
+from backend.camera_manager import UniversalCameraManager
+from backend.counting_engine import ProductCountingEngine
+from backend.security import LicensingAndSecurity
+from backend.database import (
+    get_all_cameras, get_camera_by_id, add_camera, update_camera, delete_camera,
+    add_staff_reference_photo, get_staff_reference_photos, delete_staff_reference_photo,
+    get_product_categories, get_product_counting_summary, record_product_counting_event
+)
 
 # Initialize Database Schema
 init_db()
@@ -56,6 +64,8 @@ print("[App] Initializing Vision & Tracking Systems...")
 face_engine = FaceRecognitionEngine()
 tracking_engine = GateTrackingEngine(line_orientation="horizontal", line_pos_ratio=0.55)
 stream_manager = VideoStreamManager(face_engine, tracking_engine)
+camera_manager = UniversalCameraManager()
+counting_engine = ProductCountingEngine()
 
 # Auto-start stream with testing video (looped) as default; falls back to synthetic
 stream_manager.start(source_type="file")
@@ -462,6 +472,135 @@ def create_inventory_record(req: InventoryRecordRequest):
 def list_inventory_records(date_str: Optional[str] = Query(None, alias="date")):
     """Lists inventory movements (yarn boxes, rapier bimps)."""
     return get_inventory_records(date_str)
+
+
+# ----------------- Universal Camera Integration Endpoints -----------------
+
+@app.get("/api/cameras")
+def list_cameras():
+    """Returns all registered cameras with real-time health stats and masked credentials."""
+    return camera_manager.get_all_camera_cards()
+
+@app.post("/api/cameras/test")
+def test_camera_endpoint(data: Dict[str, Any]):
+    """Tests connectivity to an RTSP, Hikvision, Dahua, ONVIF or Webcam source with 3s timeout."""
+    return camera_manager.test_camera_connection(data)
+
+@app.post("/api/cameras/add")
+def add_camera_endpoint(data: Dict[str, Any]):
+    """Registers a new CCTV camera or NVR channel and begins isolated capture."""
+    return camera_manager.add_new_camera(data)
+
+@app.post("/api/cameras/update")
+def update_camera_endpoint(data: Dict[str, Any]):
+    """Updates camera configuration or stream quality."""
+    cid = data.get("camera_id")
+    if not cid:
+        raise HTTPException(status_code=400, detail="camera_id is required.")
+    success = update_camera(cid, data)
+    return {"status": "success" if success else "error"}
+
+@app.post("/api/cameras/delete")
+def delete_camera_endpoint(data: Dict[str, Any]):
+    """Disconnects and deletes a camera from active registry."""
+    cid = data.get("camera_id")
+    if not cid:
+        raise HTTPException(status_code=400, detail="camera_id is required.")
+    camera_manager.registry.unregister_camera(cid)
+    delete_camera(cid)
+    return {"status": "success", "message": f"Camera {cid} removed."}
+
+@app.get("/api/cameras/discover")
+def discover_onvif_cameras():
+    """Scans local network for ONVIF IP cameras and NVRs."""
+    devices = camera_manager.discover_network_cameras()
+    return {"status": "success", "discovered_count": len(devices), "devices": devices}
+
+@app.get("/api/cameras/{camera_id}/stream")
+def get_single_camera_stream(camera_id: str):
+    """Dedicated live MJPEG stream for a specific camera in multi-camera grid."""
+    return StreamingResponse(
+        camera_manager.generate_mjpeg_stream(camera_id),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+@app.post("/api/tracking/set_door_box")
+def set_door_box(x: float = Form(...), y: float = Form(...), w: float = Form(...), h: float = Form(...)):
+    """Sets the Doorway ROI Box geometry for depth-aware entrance crossing."""
+    tracking_engine.set_geometry_mode("box")
+    tracking_engine.set_door_box(x, y, w, h)
+    return {"status": "success", "mode": "box", "door_box": tracking_engine.door_box}
+
+# ----------------- Multi-Angle Staff Reference Photos -----------------
+
+@app.post("/api/staff/{staff_id}/photos/add")
+async def add_staff_angle_photo(
+    staff_id: int,
+    pose_type: str = Form(...),
+    photo: Optional[UploadFile] = File(None),
+    photo_base64: Optional[str] = Form(None)
+):
+    """Enrolls a multi-angle reference photograph (front, left, right, upper, lower)."""
+    img_bgr = None
+    if photo and photo.filename:
+        content = await photo.read()
+        nparr = np.frombuffer(content, np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        filename = f"staff_{staff_id}_{pose_type}_{uuid.uuid4().hex[:6]}.jpg"
+        filepath = STAFF_PHOTOS_DIR / filename
+        with open(filepath, "wb") as f:
+            f.write(content)
+        saved_path = f"/data/staff_photos/{filename}"
+    elif photo_base64:
+        header, encoded = photo_base64.split(",", 1) if "," in photo_base64 else ("", photo_base64)
+        img_bytes = base64.b64decode(encoded)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        filename = f"staff_{staff_id}_{pose_type}_{uuid.uuid4().hex[:6]}.jpg"
+        filepath = STAFF_PHOTOS_DIR / filename
+        cv2.imwrite(str(filepath), img_bgr)
+        saved_path = f"/data/staff_photos/{filename}"
+    else:
+        raise HTTPException(status_code=400, detail="No photo file or base64 provided.")
+
+    # Compute face embedding
+    emb = face_engine.compute_embedding(img_bgr)
+    emb_list = emb.tolist() if emb is not None else None
+
+    photo_id = add_staff_reference_photo(staff_id, pose_type, saved_path, emb_list, quality_score=1.0)
+    face_engine.reload_registered_staff()
+    return {"status": "success", "photo_id": photo_id, "pose_type": pose_type, "photo_path": saved_path}
+
+@app.get("/api/staff/{staff_id}/photos")
+def get_staff_photos_endpoint(staff_id: int):
+    """Returns all enrolled reference photos for an employee."""
+    return get_staff_reference_photos(staff_id)
+
+@app.delete("/api/staff/photos/{photo_id}")
+def delete_staff_photo_endpoint(photo_id: int):
+    """Deletes an enrolled reference photo."""
+    delete_staff_reference_photo(photo_id)
+    face_engine.reload_registered_staff()
+    return {"status": "success", "message": "Reference photo removed."}
+
+# ----------------- Product Counting (Module B) Endpoints -----------------
+
+@app.get("/api/products/categories")
+def get_categories():
+    """Returns registered product categories."""
+    return get_product_categories()
+
+@app.get("/api/products/summary")
+def get_prod_summary(date_str: Optional[str] = Query(None, alias="date")):
+    """Returns daily production and category counting totals."""
+    return get_product_counting_summary(date_str)
+
+# ----------------- Licensing & Permissions Endpoints -----------------
+
+@app.get("/api/licensing/status")
+def get_license_status():
+    """Returns active commercial module licenses and permissions."""
+    return LicensingAndSecurity.get_tenant_permissions("default")
 
 # ----------------- Serve Frontend Single-Page App -----------------
 
