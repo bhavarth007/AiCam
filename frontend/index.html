@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TexVision AI - Textile Industry AI Camera Control Center</title>
+  <title>AiCam - Universal AI CCTV Software Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -13,7 +13,7 @@
 
   <!-- Printable Report Header (Visible only when printing) -->
   <div class="print-header">
-    <h1 style="font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em;">TEXVISION AI - TEXTILE MILL ATTENDANCE REPORT</h1>
+    <h1 style="font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em;">AiCam - OFFICIAL ATTENDANCE REPORT</h1>
     <p style="font-size: 0.9rem; color: #555; margin-top: 4px;">Gate 01 Attendance & Hours Log | Date: <span id="printReportDate">Today</span> | Generated Automatically by AI Camera System</p>
     <hr style="margin: 12px 0; border: 0; border-top: 2px solid #000;">
   </div>
@@ -28,8 +28,8 @@
         </svg>
       </div>
       <div class="brand-text">
-        <h1>TEXVISION AI</h1>
-        <p>Textile Mill & Saree Manufacturing AI Camera Control Center</p>
+        <h1>AiCam</h1>
+        <p>Universal AI CCTV Software Platform</p>
       </div>
     </div>
 
@@ -209,6 +209,9 @@
                 </button>
                 <button id="btnResetSessionCounts" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;" onclick="resetSessionCrossings()">
                   &#8635; Reset Counts
+                </button>
+                <button id="btnSetInsideOffice" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem; font-weight: 700; color: #34d399; border-color: rgba(16,185,129,0.35); background: rgba(16,185,129,0.12);" onclick="setUserInsideOffice()" title="Confirm Bhavarth is Inside Office Working">
+                  &#128994; I'm Inside Office
                 </button>
                 <div style="display: flex; align-items: center; gap: 0.35rem; margin-left: 0.4rem; padding-left: 0.5rem; border-left: 1px solid rgba(255,255,255,0.15);">
                   <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 700;">Face ID Target:</span>
@@ -743,7 +746,7 @@
             <li>Tap your office gate camera &gt; Tap the <strong>⚙️ Settings</strong> icon.</li>
             <li>Go to <strong>Device Information</strong> &gt; note the <strong>IP Address</strong> (e.g. <code>192.168.1.130</code>).</li>
             <li>Under <strong>Device Settings</strong>, ensure <strong>Video Encryption</strong> is turned <strong>OFF</strong> (or use your 6-letter camera verification code from the camera label as password).</li>
-            <li>Click <strong>Connect Office Camera</strong> below to stream live video into TexVision AI.</li>
+            <li>Click <strong>Connect Office Camera</strong> below to stream live video into AiCam.</li>
           </ol>
         </div>
 

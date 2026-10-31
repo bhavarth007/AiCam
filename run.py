@@ -4,7 +4,7 @@ import uvicorn
 
 if __name__ == "__main__":
     print("=" * 65)
-    print("  TEXVISION AI - TEXTILE INDUSTRY AI CAMERA SYSTEM")
+    print("  AiCam - TEXTILE INDUSTRY AI CAMERA SYSTEM")
     print("  24/7 Gate Attendance, Saree/Taka & Inventory Management")
     print("=" * 65)
     print("  Server running at: http://localhost:8000")

@@ -17,7 +17,7 @@ for d in [DATA_DIR, MODELS_DIR, FRONTEND_DIR, STAFF_PHOTOS_DIR, UNKNOWN_SNAPSHOT
     d.mkdir(parents=True, exist_ok=True)
 
 # Application Settings
-APP_NAME = "TexVision AI Camera Control Center"
+APP_NAME = "AiCam Camera Control Center"
 VERSION = "1.0.0"
 
 # Camera & Detection Settings

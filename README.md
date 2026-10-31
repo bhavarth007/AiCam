@@ -1,4 +1,4 @@
-# TexVision AI - Textile Industry AI Camera Control Center
+# AiCam - Textile Industry AI Camera Control Center
 
 An enterprise-grade Computer Vision & AI Camera solution built specifically for the **Textile & Saree Manufacturing Industry**.
 

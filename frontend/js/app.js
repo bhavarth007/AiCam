@@ -364,7 +364,7 @@ function initGateLineCanvas() {
     // Initialize geometry controls
     setGateGeometryMode(gateGeometry);
     if (gateGeometry === 'box') {
-        updateBoxSliders();
+        if (isDragging) updateBoxSliders();
     } else {
         updateSlidersFromLine();
     }
@@ -531,7 +531,7 @@ function onCanvasMouseMove(e) {
             dragStartX = nx;
             dragStartY = ny;
         }
-        updateBoxSliders();
+        if (isDragging) updateBoxSliders();
         saveGateBoxToStorage();
     } else {
         if (dragTarget === 'new') {
@@ -678,7 +678,7 @@ function drawLineOnCanvas() {
         ctx.fillText('⬇ INSIDE (OFFICE)', bx + bw/2, by + bh - 8);
         ctx.restore();
 
-        updateBoxSliders();
+        if (isDragging) updateBoxSliders();
         // Real-time Motion Reticle in Gate Zone
         if (liveGateMotion && liveGateMotion.active) {
             const mx = liveGateMotion.x * W;
@@ -924,7 +924,7 @@ window.snapToOfficeDoorBox = function() {
     gateBox = { x: 0.170, y: 0.150, w: 0.255, h: 0.800 };
     saveGateBoxToStorage();
     setGateGeometryMode('box');
-    updateBoxSliders();
+    if (isDragging) updateBoxSliders();
     drawLineOnCanvas();
     showNotification('🎯 Snapped to your Office Door Box (behind chair)!', 'success');
 };
@@ -1343,7 +1343,7 @@ function initStaffRegistration() {
         btnLiveSnap.addEventListener('click', async () => {
             btnLiveSnap.textContent = '📸 Grabbing Frame...';
             try {
-                const res = await fetch('/api/camera/snapshot?t=' + Date.now());
+                const res = await fetch(getApiUrl('/api/camera/snapshot?t=') + Date.now());
                 if (!res.ok) throw new Error('Camera snapshot failed');
                 const blob = await res.blob();
                 const reader = new FileReader();
@@ -1372,7 +1372,7 @@ function initStaffRegistration() {
             const formData = new FormData();
             formData.append('clear_staff', 'false');
             try {
-                const res = await fetch('/api/system/clear_data', { method: 'POST', body: formData });
+                const res = await fetch(getApiUrl('/api/system/clear_data'), { method: 'POST', body: formData });
                 const data = await res.json();
                 showNotification(data.message, 'success');
                 loadStaffList();
@@ -1391,7 +1391,7 @@ function initStaffRegistration() {
             e.preventDefault();
             const formData = new FormData(editForm);
             try {
-                const res = await fetch('/api/staff/update', { method: 'POST', body: formData });
+                const res = await fetch(getApiUrl('/api/staff/update'), { method: 'POST', body: formData });
                 const data = await res.json();
                 showNotification(data.message, 'success');
                 if (editModal) editModal.style.display = 'none';
@@ -1464,7 +1464,7 @@ function initStaffRegistration() {
             const formData = new FormData(form);
 
             try {
-                const res = await fetch('/api/staff/register', {
+                const res = await fetch(getApiUrl('/api/staff/register'), {
                     method: 'POST',
                     body: formData
                 });
@@ -1519,7 +1519,7 @@ async function loadStaffList() {
     }
 
     try {
-        const res = await fetch('/api/staff');
+        const res = await fetch(getApiUrl('/api/staff'));
         const staffList = await res.json();
 
         if (staffList.length === 0) {
@@ -1580,7 +1580,7 @@ async function simulateGatePass(staffId, direction) {
     formData.append('direction', direction);
 
     try {
-        const res = await fetch('/api/attendance/manual_event', {
+        const res = await fetch(getApiUrl('/api/attendance/manual_event'), {
             method: 'POST',
             body: formData
         });
@@ -1597,7 +1597,7 @@ async function simulateGatePass(staffId, direction) {
 async function deleteStaffMember(staffId) {
     if (!confirm('Are you sure you want to deactivate this staff member?')) return;
     try {
-        await fetch(`/api/staff/${staffId}`, { method: 'DELETE' });
+        await fetch(getApiUrl(`/api/staff/${staffId}`), { method: 'DELETE' });
         showNotification('Staff member removed.', 'info');
         loadStaffList();
         fetchStats();
@@ -2069,7 +2069,7 @@ window.deleteUnknown = async function(id) {
     }
 
     try {
-        const res = await fetch(`/api/unknowns/${id}`, { method: 'DELETE' });
+        const res = await fetch(getApiUrl(`/api/unknowns/${id}`), { method: 'DELETE' });
         const data = await res.json();
         showNotification(data.message || 'Snapshot deleted.', 'info');
         const card = document.getElementById(`unknown-card-${id}`);
@@ -2104,7 +2104,7 @@ window.deleteAllUnknownsForDate = async function() {
         if (!res.ok) {
             const fd = new FormData();
             fd.append('date_str', targetDate);
-            res = await fetch('/api/unknowns/clear_all', { method: 'POST', body: fd });
+            res = await fetch(getApiUrl('/api/unknowns/clear_all'), { method: 'POST', body: fd });
         }
         const data = await res.json();
         showNotification(data.message || 'Deleted snapshots for date.', 'success');
@@ -2128,9 +2128,9 @@ window.deleteAllUnknownsCompletely = async function() {
     }
 
     try {
-        let res = await fetch('/api/unknowns', { method: 'DELETE' });
+        let res = await fetch(getApiUrl('/api/unknowns'), { method: 'DELETE' });
         if (!res.ok) {
-            res = await fetch('/api/unknowns/clear_all', { method: 'POST' });
+            res = await fetch(getApiUrl('/api/unknowns/clear_all'), { method: 'POST' });
         }
         const data = await res.json();
         showNotification(data.message || 'All unknown snapshots deleted successfully!', 'success');
@@ -2198,7 +2198,7 @@ function initModule2() {
             };
 
             try {
-                const res = await fetch('/api/module2/record', {
+                const res = await fetch(getApiUrl('/api/module2/record'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -2253,7 +2253,7 @@ async function loadModule2Records() {
     }
 
     try {
-        const res = await fetch('/api/module2/records');
+        const res = await fetch(getApiUrl('/api/module2/records'));
         const list = await res.json();
 
         if (list.length === 0) {
@@ -2308,7 +2308,7 @@ async function logInventory(material, direction) {
     };
 
     try {
-        const res = await fetch('/api/module3/record', {
+        const res = await fetch(getApiUrl('/api/module3/record'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -2357,7 +2357,7 @@ async function loadModule3Records() {
     }
 
     try {
-        const res = await fetch('/api/module3/records');
+        const res = await fetch(getApiUrl('/api/module3/records'));
         const list = await res.json();
 
         if (list.length === 0) {
@@ -2636,13 +2636,17 @@ function standaloneResetCounts() {
     standaloneStats.session_out = 0;
     standaloneStats.session_unknown = 0;
     REAL_STAFF_ROSTER.forEach((s, i) => {
-        s.in_count = 1;
+        s.in_count = 0;
         s.out_count = 0;
+        s.in_time = null;
         s.out_time = null;
-        s.status = 'Working';
+        s.live_hours = 0.0;
+        s.status = 'Not Checked In';
         s.hours_outside = 0;
     });
-    standaloneStats.currently_inside = 4;
+    standaloneStats.currently_inside = 0;
+    standaloneStats.present_today = 0;
+    standaloneStats.absent_today = 4;
     standaloneEvents = [];
     standaloneUnknowns = [];
     localStorage.removeItem('aicam_staff_roster');
@@ -2919,7 +2923,7 @@ function detectGateLineMotion() {
                 if (deskMotionCount > 8) activeGatePass.hadDesk = true;
             }
 
-            const estDir = (activeGatePass.hadDesk || activeGatePass.curY < activeGatePass.startY) ? 'OUT' : 'IN';
+            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.04) ? 'OUT' : 'IN';
             liveGateMotion = {
                 active: true,
                 x: normX,
@@ -2938,13 +2942,19 @@ function detectGateLineMotion() {
                     if (now - lastMotionCrossingTime >= 2200) {
                         lastMotionCrossingTime = now;
 
-                        // OUT: Came from desk, or moved towards top of doorway / hallway
-                        // IN: Came from door threshold / outside towards room
+                        // Accurate depth-crossing:
+                        // OUT: True upward translation into doorway opening (curY < startY - 0.06)
+                        // IN: True downward translation from door into office (curY > startY + 0.06)
                         let dir = 'IN';
-                        if (activeGatePass.hadDesk || activeGatePass.curY < activeGatePass.startY - 0.02) {
+                        const deltaY = activeGatePass.curY - activeGatePass.startY;
+                        if (deltaY < -0.05) {
                             dir = 'OUT';
-                        } else {
+                        } else if (deltaY > 0.05) {
                             dir = 'IN';
+                        } else {
+                            // Ambiguous vertical shift (e.g. typing or shifting in chair):
+                            // If desk was active, the user is safely INSIDE the office working!
+                            dir = (activeGatePass.curY > 0.60) ? 'IN' : 'OUT';
                         }
 
                         // Determine if Registered Staff (Bhavarth) or Unregistered Visitor
@@ -3524,9 +3534,9 @@ window.closeUniversalCameraModal = function() {
 };
 
 window.onCameraBrandChange = function() {
-    const brand = document.getElementById('camBrandSelect')?.value || 'generic';
-    const portInput = document.getElementById('camPortInput');
-    const pathInput = document.getElementById('camPathInput');
+    const brand = document.getElementById('camInputBrand')?.value || 'generic';
+    const portInput = document.getElementById('camInputPort');
+    const pathInput = document.getElementById('camInputCustomPath');
     const connType = document.getElementById('camConnTypeSelect')?.value || 'rtsp';
 
     const brandDefaults = {
@@ -3555,15 +3565,15 @@ window.testCameraConnectionLive = async function() {
     }
 
     const payload = {
-        name: document.getElementById('camNameInput')?.value || 'Camera Test',
-        brand: document.getElementById('camBrandSelect')?.value || 'generic',
+        name: document.getElementById('camInputName')?.value || 'Camera Test',
+        brand: document.getElementById('camInputBrand')?.value || 'generic',
         connection_type: document.getElementById('camConnTypeSelect')?.value || 'rtsp',
-        ip_address: document.getElementById('camIpInput')?.value || '',
-        port: parseInt(document.getElementById('camPortInput')?.value || '554'),
-        username: document.getElementById('camUsernameInput')?.value || '',
-        password: document.getElementById('camPasswordInput')?.value || '',
-        channel: parseInt(document.getElementById('camChannelInput')?.value || '1'),
-        rtsp_path: document.getElementById('camPathInput')?.value || ''
+        ip_address: document.getElementById('camInputIp')?.value || '',
+        port: parseInt(document.getElementById('camInputPort')?.value || '554'),
+        username: document.getElementById('camInputUser')?.value || '',
+        password: document.getElementById('camInputPass')?.value || '',
+        channel: parseInt(document.getElementById('camInputChannel')?.value || '1'),
+        rtsp_path: document.getElementById('camInputCustomPath')?.value || ''
     };
 
     try {
@@ -3591,15 +3601,15 @@ window.testCameraConnectionLive = async function() {
 
 window.saveNewCamera = async function() {
     const payload = {
-        name: document.getElementById('camNameInput')?.value || 'Gate Camera',
-        brand: document.getElementById('camBrandSelect')?.value || 'generic',
+        name: document.getElementById('camInputName')?.value || 'Gate Camera',
+        brand: document.getElementById('camInputBrand')?.value || 'generic',
         connection_type: document.getElementById('camConnTypeSelect')?.value || 'rtsp',
-        ip_address: document.getElementById('camIpInput')?.value || '192.168.1.100',
-        port: parseInt(document.getElementById('camPortInput')?.value || '554'),
-        username: document.getElementById('camUsernameInput')?.value || 'admin',
-        password: document.getElementById('camPasswordInput')?.value || '',
-        channel: parseInt(document.getElementById('camChannelInput')?.value || '1'),
-        stream_path: document.getElementById('camPathInput')?.value || '',
+        ip_address: document.getElementById('camInputIp')?.value || '192.168.1.100',
+        port: parseInt(document.getElementById('camInputPort')?.value || '554'),
+        username: document.getElementById('camInputUser')?.value || 'admin',
+        password: document.getElementById('camInputPass')?.value || '',
+        channel: parseInt(document.getElementById('camInputChannel')?.value || '1'),
+        stream_path: document.getElementById('camInputCustomPath')?.value || '',
         stream_profile: 'main'
     };
 
@@ -3626,7 +3636,7 @@ window.saveNewCamera = async function() {
 
 window.discoverOnvifDevices = async function() {
     const btn = document.getElementById('btnDiscoverOnvif');
-    const container = document.getElementById('onvifDiscoveryResults');
+    const container = document.getElementById('onvifDeviceList');
     if (btn) btn.textContent = '🔍 Scanning Network...';
     if (container) {
         container.style.display = 'block';
@@ -3662,8 +3672,8 @@ window.discoverOnvifDevices = async function() {
 };
 
 window.applyDiscoveredCamera = function(ip, brand) {
-    const ipInput = document.getElementById('camIpInput');
-    const brandSelect = document.getElementById('camBrandSelect');
+    const ipInput = document.getElementById('camInputIp');
+    const brandSelect = document.getElementById('camInputBrand');
     if (ipInput) ipInput.value = ip;
     if (brandSelect && brand) {
         brandSelect.value = brand.toLowerCase();
@@ -3673,7 +3683,7 @@ window.applyDiscoveredCamera = function(ip, brand) {
 };
 
 window.loadRegisteredCamerasList = async function() {
-    const container = document.getElementById('registeredCamerasList');
+    const container = document.getElementById('registeredCamerasListContainer');
     if (!container) return;
 
     let cams = [];
@@ -3819,3 +3829,23 @@ function applyLightboxZoom() {
         img.style.transition = 'transform 0.2s ease';
     }
 }
+
+
+window.setUserInsideOffice = function() {
+    const bhavarth = REAL_STAFF_ROSTER.find(s => s.staff_code === 'TXS-002') || REAL_STAFF_ROSTER[1];
+    if (bhavarth) {
+        bhavarth.status = 'Working';
+        if (bhavarth.in_count === 0) bhavarth.in_count = 1;
+        if (!bhavarth.in_time) bhavarth.in_time = new Date().toLocaleTimeString('en-US', { hour12: false });
+        bhavarth.out_time = null;
+        bhavarth.hours_outside = 0;
+        standaloneStats.currently_inside = Math.max(1, standaloneStats.currently_inside);
+        standaloneStats.present_today = Math.max(1, standaloneStats.present_today);
+        standaloneStats.absent_today = Math.max(0, 4 - standaloneStats.present_today);
+        renderStandaloneStaff();
+        renderStandaloneStats();
+        renderStandaloneReports();
+        saveAppStateToStorage();
+        showNotification('🟢 Status Confirmed: Bhavarth is INSIDE Office (Working)', 'success');
+    }
+};
