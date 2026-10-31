@@ -197,11 +197,10 @@
           <!-- Controls Bar -->
           <div class="cam-controls-bar" style="flex-direction: column; gap: 0.75rem; align-items: stretch; padding-top: 0.75rem;">
 
-            <!-- Row 1: Start / Stop / Reset -->
+            <!-- Row 1: Primary Controls (Start / Stop / Reset / Status) -->
             <div style="display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; background: rgba(15,23,42,0.92); padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
               <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-                <span style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-right: 0.2rem;">Live Video &amp; Counting:</span>
-                <button id="btnStartCounting" class="btn btn-emerald" style="padding: 0.45rem 0.95rem; font-weight: 700; font-size: 0.82rem;" onclick="startLiveCounting()">
+                <button id="btnStartCounting" class="btn btn-emerald" style="padding: 0.45rem 1rem; font-weight: 700; font-size: 0.85rem;" onclick="startLiveCounting()">
                   &#9654; Start Camera &amp; Live Counting
                 </button>
                 <button id="btnStopCounting" class="btn btn-rose" style="padding: 0.45rem 0.95rem; font-weight: 700; font-size: 0.82rem;" onclick="stopLiveCounting()">
@@ -210,40 +209,38 @@
                 <button id="btnResetSessionCounts" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;" onclick="resetSessionCrossings()">
                   &#8635; Reset Counts
                 </button>
-                <button id="btnSetInsideOffice" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem; font-weight: 700; color: #34d399; border-color: rgba(16,185,129,0.35); background: rgba(16,185,129,0.12);" onclick="setUserInsideOffice()" title="Confirm Bhavarth is Inside Office Working">
-                  &#128994; I'm Inside Office
-                </button>
-                <div style="display: flex; align-items: center; gap: 0.35rem; margin-left: 0.4rem; padding-left: 0.5rem; border-left: 1px solid rgba(255,255,255,0.15);">
-                  <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 700;">Face ID Target:</span>
-                  <button id="btnTargetAuto" class="btn btn-primary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; font-weight: 700;" onclick="setGatePersonTarget('auto')">&#128994; Auto Face ID</button>
-                  <button id="btnTargetStaff" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="setGatePersonTarget('bhavarth')">&#128100; Bhavarth (TXS-002)</button>
-                  <button id="btnTargetUnknown" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; color: #f87171;" onclick="setGatePersonTarget('unknown')">&#9888;&#65039; Unknown Visitor</button>
-                </div>
               </div>
-              <div id="countingStatusBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; color: #fb7185; background: rgba(244,63,94,0.15); border: 1px solid rgba(244,63,94,0.3); padding: 3px 10px; border-radius: 20px;">
+
+              <!-- Live Counting Status Badge -->
+              <div id="countingStatusBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; color: #fb7185; background: rgba(244,63,94,0.15); border: 1px solid rgba(244,63,94,0.3); padding: 4px 12px; border-radius: 20px;">
                 <span class="pulse-dot" id="statusDot" style="background: #f43f5e; box-shadow: 0 0 8px #f43f5e; animation: none;"></span>
                 <span id="countingStatusText">CAMERA &amp; COUNTING STOPPED</span>
               </div>
             </div>
 
-            <!-- Row 2: Source + Gate Line Editor -->
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.75rem;">
+            <!-- Row 2: Clean Video Source + Target Selector -->
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
 
-              <!-- Source selector -->
-              <div class="source-selector" style="flex-wrap: wrap;">
-                <button id="btnSrcTestVideo" class="btn btn-secondary" onclick="setVideoSource('file')" title="Load testing video.mp4">
-                  &#127910; Testing Video
-                </button>
+              <!-- Clean Source Selector (No repetition) -->
+              <div class="source-selector" style="flex-wrap: wrap; margin: 0;">
                 <button id="btnSrcWebcam" class="btn btn-primary" onclick="setVideoSource('webcam')">
                   &#128249; Live Webcam
+                </button>
+                <button id="btnSrcTestVideo" class="btn btn-secondary" onclick="setVideoSource('file')" title="Load testing video.mp4">
+                  &#127910; Testing Video
                 </button>
                 <label for="videoFileInput" class="btn btn-secondary" style="margin: 0; cursor: pointer;">
                   &#128193; Upload Video
                 </label>
                 <input type="file" id="videoFileInput" accept="video/*" style="display: none;" />
-                <button id="btnSrcSim" class="btn btn-secondary" onclick="setVideoSource('synthetic')">
-                  &#127981; Simulation
-                </button>
+              </div>
+
+              <!-- Biometric Target Selection -->
+              <div style="display: flex; align-items: center; gap: 0.4rem; background: rgba(15,23,42,0.7); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 700;">Face ID Target:</span>
+                <button id="btnTargetAuto" class="btn btn-primary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; font-weight: 700;" onclick="setGatePersonTarget('auto')">&#128994; Auto Face ID</button>
+                <button id="btnTargetStaff" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="setGatePersonTarget('bhavarth')">&#128100; Bhavarth (TXS-002)</button>
+                <button id="btnTargetUnknown" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; color: #f87171;" onclick="setGatePersonTarget('unknown')">&#9888;&#65039; Unknown Visitor</button>
               </div>
 
               <!-- Gate Geometry & Zone Editor Panel -->
