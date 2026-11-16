@@ -5,8 +5,13 @@ from typing import List, Dict, Optional, Any
 from backend.config import DB_PATH
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        pass
     return conn
 
 def init_db():
@@ -45,8 +50,9 @@ def init_db():
         status TEXT DEFAULT 'Working',
         last_seen TEXT NOT NULL,
         notes TEXT,
+        record_mode TEXT DEFAULT 'live',
         FOREIGN KEY (staff_id) REFERENCES staff (id),
-        UNIQUE(staff_id, date)
+        UNIQUE(staff_id, date, record_mode)
     )
     """)
 
@@ -63,6 +69,50 @@ def init_db():
         cursor.execute("ALTER TABLE attendance_logs ADD COLUMN last_in_timestamp TEXT")
     if "last_out_timestamp" not in cols:
         cursor.execute("ALTER TABLE attendance_logs ADD COLUMN last_out_timestamp TEXT")
+    if "record_mode" not in cols:
+        cursor.execute("ALTER TABLE attendance_logs ADD COLUMN record_mode TEXT DEFAULT 'live'")
+
+    # Ensure compound UNIQUE constraint includes record_mode to isolate test and live attendance
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='attendance_logs'")
+    tbl_row = cursor.fetchone()
+    if tbl_row and "UNIQUE(staff_id, date, record_mode)" not in (tbl_row[0] or ""):
+        try:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS attendance_logs_migrated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                in_time TEXT NOT NULL,
+                out_time TEXT,
+                total_hours REAL DEFAULT 0.0,
+                in_count INTEGER DEFAULT 1,
+                out_count INTEGER DEFAULT 0,
+                total_outside_hours REAL DEFAULT 0.0,
+                last_in_timestamp TEXT,
+                last_out_timestamp TEXT,
+                status TEXT DEFAULT 'Working',
+                last_seen TEXT NOT NULL,
+                notes TEXT,
+                record_mode TEXT DEFAULT 'live',
+                FOREIGN KEY (staff_id) REFERENCES staff (id),
+                UNIQUE(staff_id, date, record_mode)
+            )
+            """)
+            cursor.execute("""
+            INSERT INTO attendance_logs_migrated (
+                id, staff_id, date, in_time, out_time, total_hours, in_count, out_count,
+                total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, notes, record_mode
+            )
+            SELECT id, staff_id, date, in_time, out_time, total_hours, in_count, out_count,
+                   total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, notes,
+                   COALESCE(record_mode, 'live')
+            FROM attendance_logs
+            """)
+            cursor.execute("DROP TABLE attendance_logs")
+            cursor.execute("ALTER TABLE attendance_logs_migrated RENAME TO attendance_logs")
+            conn.commit()
+        except Exception as e:
+            print(f"[Database] attendance_logs migration notice: {e}")
 
     # 3. Raw Line Crossing Event Logs (Each IN or OUT gate passage)
     cursor.execute("""
@@ -75,9 +125,15 @@ def init_db():
         date TEXT NOT NULL,
         confidence REAL DEFAULT 0.0,
         snapshot_path TEXT,
+        record_mode TEXT DEFAULT 'live',
         FOREIGN KEY (staff_id) REFERENCES staff (id)
     )
     """)
+
+    cursor.execute("PRAGMA table_info(gate_events)")
+    cols_gate = [c[1] for c in cursor.fetchall()]
+    if "record_mode" not in cols_gate:
+        cursor.execute("ALTER TABLE gate_events ADD COLUMN record_mode TEXT DEFAULT 'live'")
 
     # 4. Unknown Persons Log (Captures photo when unregistered face is seen)
     cursor.execute("""
@@ -88,9 +144,15 @@ def init_db():
         snapshot_path TEXT NOT NULL,
         camera_id TEXT DEFAULT 'Gate Cam 1',
         status TEXT DEFAULT 'Unreviewed', -- Unreviewed, Approved, Flagged
-        notes TEXT
+        notes TEXT,
+        record_mode TEXT DEFAULT 'live'
     )
     """)
+
+    cursor.execute("PRAGMA table_info(unknown_visitors)")
+    cols_unk = [c[1] for c in cursor.fetchall()]
+    if "record_mode" not in cols_unk:
+        cursor.execute("ALTER TABLE unknown_visitors ADD COLUMN record_mode TEXT DEFAULT 'live'")
 
     # 5. Module 2: Sarees & Taka Counting Records (Taka rolls 20-40m bunches, Finished Sarees vs Challan)
     cursor.execute("""
@@ -118,22 +180,21 @@ def init_db():
         timestamp TEXT NOT NULL,
         date TEXT NOT NULL,
         material_type TEXT NOT NULL,     -- 'Yarn Box', 'Rapier Bimp (Beam)', 'Zari Spool Box', 'Other Product'
-        direction TEXT NOT NULL,         -- 'IN', 'OUT'
+        direction TEXT NOT NULL,         -- 'IN' or 'OUT'
         batch_count INTEGER DEFAULT 1,
-        lock_token TEXT UNIQUE,          -- Prevents double count within cooldown
-        camera_id TEXT DEFAULT 'Gate Cam 1',
+        lock_token TEXT UNIQUE,          -- Anti-Double Count Token (Prevents counting within cooldown window)
         notes TEXT
     )
     """)
 
-    # 7. Universal Camera Registry
+    # 7. Enterprise Camera Registry
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS cameras (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         camera_id TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
-        brand TEXT NOT NULL,
-        connection_type TEXT NOT NULL,
+        brand TEXT DEFAULT 'generic_rtsp',
+        connection_type TEXT DEFAULT 'rtsp',
         ip_address TEXT,
         port INTEGER DEFAULT 554,
         username TEXT,
@@ -150,13 +211,13 @@ def init_db():
         last_seen TEXT,
         is_active INTEGER DEFAULT 1,
         assigned_module TEXT DEFAULT 'attendance',
-        geometry_config TEXT,
+        geometry_config TEXT DEFAULT '{}',
         tenant_id TEXT DEFAULT 'default',
         created_at TEXT NOT NULL
     )
     """)
 
-    # 8. Staff Reference Photos (Multi-Angle Biometric Enrollment)
+    # 8. Staff Multi-Angle Reference Photos Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS staff_reference_photos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,26 +227,23 @@ def init_db():
         face_embedding TEXT,
         quality_score REAL DEFAULT 1.0,
         created_at TEXT NOT NULL,
-        FOREIGN KEY (staff_id) REFERENCES staff (id) ON DELETE CASCADE
+        FOREIGN KEY (staff_id) REFERENCES staff (id)
     )
     """)
 
-    # 9. Product Categories & Detection Classes
+    # 9. Product Counting & Category Operations Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS product_categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category_code TEXT UNIQUE NOT NULL,
+        code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
-        description TEXT,
-        yolo_class_id INTEGER,
-        yolo_class_name TEXT,
-        color_hex TEXT DEFAULT '#06b6d4',
+        unit TEXT DEFAULT 'pcs',
+        color_hex TEXT DEFAULT '#38bdf8',
         tenant_id TEXT DEFAULT 'default',
         created_at TEXT NOT NULL
     )
     """)
 
-    # 10. Product Counting Live Events
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS product_counting_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,24 +261,8 @@ def init_db():
     )
     """)
 
-    # 11. Commercial Tenants & Module Licensing
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tenants (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id TEXT UNIQUE NOT NULL,
-        company_name TEXT NOT NULL,
-        contact_email TEXT,
-        attendance_enabled INTEGER DEFAULT 1,
-        counting_enabled INTEGER DEFAULT 1,
-        max_cameras INTEGER DEFAULT 8,
-        api_key TEXT UNIQUE,
-        created_at TEXT NOT NULL
-    )
-    """)
-
     conn.commit()
     conn.close()
-
 
 # ----------------- Staff Functions -----------------
 
@@ -230,7 +272,6 @@ def add_staff(name: str, designation: str, face_id: str, face_embedding: Optiona
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     if not staff_code:
-        # Generate staff code
         cursor.execute("SELECT COUNT(*) FROM staff")
         count = cursor.fetchone()[0] + 1
         staff_code = f"TXS-{count:03d}"
@@ -243,6 +284,8 @@ def add_staff(name: str, designation: str, face_id: str, face_embedding: Optiona
     """, (staff_code, name, designation, face_id, emb_json, photo_path, now_str))
     
     staff_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
     return staff_id
 
 def get_all_staff() -> List[Dict[str, Any]]:
@@ -291,10 +334,11 @@ def delete_staff(staff_id: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE staff SET status = 'deleted' WHERE id = ?", (staff_id,))
+    conn.commit()
+    conn.close()
     return True
 
 def update_staff(staff_id: int, name: str, designation: str, face_id: Optional[str] = None, face_embedding: Optional[List[float]] = None, photo_path: Optional[str] = None) -> bool:
-    """Updates staff details, including optional embedding and photo."""
     conn = get_connection()
     cursor = conn.cursor()
     updates = ["name = ?", "designation = ?"]
@@ -313,11 +357,15 @@ def update_staff(staff_id: int, name: str, designation: str, face_id: Optional[s
     params.append(staff_id)
     query = f"UPDATE staff SET {', '.join(updates)} WHERE id = ?"
     cursor.execute(query, tuple(params))
+    conn.commit()
+    conn.close()
     return True
 
 # ----------------- Attendance Logging Functions -----------------
 
-def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] = None, confidence: float = 0.0, snapshot_path: Optional[str] = None):
+def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] = None, 
+                      confidence: float = 0.0, snapshot_path: Optional[str] = None,
+                      record_mode: str = "live"):
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now()
@@ -326,29 +374,28 @@ def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] 
     time_str = now.strftime("%H:%M:%S")
     
     cursor.execute("""
-        INSERT INTO gate_events (person_type, staff_id, direction, timestamp, date, confidence, snapshot_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (person_type, staff_id, direction, now_str, today_str, confidence, snapshot_path))
+        INSERT INTO gate_events (person_type, staff_id, direction, timestamp, date, confidence, snapshot_path, record_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (person_type, staff_id, direction, now_str, today_str, confidence, snapshot_path, record_mode))
     
     # If registered staff
     if staff_id and person_type == "Registered":
-        # Check if record exists for today
-        cursor.execute("SELECT * FROM attendance_logs WHERE staff_id = ? AND date = ?", (staff_id, today_str))
+        # Check if record exists for today in this record_mode
+        cursor.execute("SELECT * FROM attendance_logs WHERE staff_id = ? AND date = ? AND record_mode = ?", (staff_id, today_str, record_mode))
         existing = cursor.fetchone()
         
         if direction == "IN":
             if not existing:
                 # First IN of the day -> Start working time
                 cursor.execute("""
-                    INSERT INTO attendance_logs (staff_id, date, in_time, out_time, total_hours, in_count, out_count, total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen)
-                    VALUES (?, ?, ?, NULL, 0.0, 1, 0, 0.0, ?, NULL, 'Working', ?)
-                """, (staff_id, today_str, time_str, now_str, now_str))
+                    INSERT INTO attendance_logs (staff_id, date, in_time, out_time, total_hours, in_count, out_count, total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, record_mode)
+                    VALUES (?, ?, ?, NULL, 0.0, 1, 0, 0.0, ?, NULL, 'Working', ?, ?)
+                """, (staff_id, today_str, time_str, now_str, now_str, record_mode))
             else:
                 ex_d = dict(existing)
                 new_in_count = (ex_d.get("in_count") or 1)
                 new_outside_hrs = (ex_d.get("total_outside_hours") or 0.0)
 
-                # If they were previously Outside, calculate time spent outside on this trip
                 if ex_d.get("last_out_timestamp") and ex_d.get("status") == "Outside":
                     try:
                         out_dt = datetime.strptime(ex_d["last_out_timestamp"], "%Y-%m-%d %H:%M:%S")
@@ -370,7 +417,6 @@ def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] 
                 new_out_count = (ex_d.get("out_count") or 0) + 1
                 cur_work_hrs = (ex_d.get("total_hours") or 0.0)
 
-                # Calculate time spent inside during this shift segment
                 last_in_str = ex_d.get("last_in_timestamp") or f"{today_str} {ex_d['in_time']}"
                 try:
                     last_in_dt = datetime.strptime(last_in_str, "%Y-%m-%d %H:%M:%S")
@@ -387,12 +433,14 @@ def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] 
             else:
                 # Recorded an OUT without initial IN
                 cursor.execute("""
-                    INSERT INTO attendance_logs (staff_id, date, in_time, out_time, total_hours, in_count, out_count, total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, notes)
-                    VALUES (?, ?, ?, ?, 0.0, 0, 1, 0.0, NULL, ?, 'Outside', ?, 'Exited through gate')
-                """, (staff_id, today_str, time_str, time_str, now_str, now_str))
+                    INSERT INTO attendance_logs (staff_id, date, in_time, out_time, total_hours, in_count, out_count, total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, notes, record_mode)
+                    VALUES (?, ?, ?, ?, 0.0, 0, 1, 0.0, NULL, ?, 'Outside', ?, 'Exited through gate', ?)
+                """, (staff_id, today_str, time_str, time_str, now_str, now_str, record_mode))
 
+    conn.commit()
+    conn.close()
 
-def log_unknown_visitor(snapshot_path: str, camera_id: str = "Gate Cam 1", notes: str = "") -> int:
+def log_unknown_visitor(snapshot_path: str, camera_id: str = "Gate Cam 1", notes: str = "", record_mode: str = "live") -> int:
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now()
@@ -400,22 +448,23 @@ def log_unknown_visitor(snapshot_path: str, camera_id: str = "Gate Cam 1", notes
     today_str = now.strftime("%Y-%m-%d")
     
     cursor.execute("""
-        INSERT INTO unknown_visitors (timestamp, date, snapshot_path, camera_id, status, notes)
-        VALUES (?, ?, ?, ?, 'Unreviewed', ?)
-    """, (now_str, today_str, snapshot_path, camera_id, notes))
+        INSERT INTO unknown_visitors (timestamp, date, snapshot_path, camera_id, status, notes, record_mode)
+        VALUES (?, ?, ?, ?, 'Unreviewed', ?, ?)
+    """, (now_str, today_str, snapshot_path, camera_id, notes, record_mode))
     
     record_id = cursor.lastrowid
     
     # Also log as gate event
     cursor.execute("""
-        INSERT INTO gate_events (person_type, staff_id, direction, timestamp, date, confidence, snapshot_path)
-        VALUES ('Unknown', NULL, 'IN', ?, ?, 0.0, ?)
-    """, (now_str, today_str, snapshot_path))
+        INSERT INTO gate_events (person_type, staff_id, direction, timestamp, date, confidence, snapshot_path, record_mode)
+        VALUES ('Unknown', NULL, 'IN', ?, ?, 0.0, ?, ?)
+    """, (now_str, today_str, snapshot_path, record_mode))
     
+    conn.commit()
+    conn.close()
     return record_id
 
 def delete_unknown_visitor(visitor_id: int) -> bool:
-    """Deletes an unknown visitor record and its snapshot image from disk."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT snapshot_path FROM unknown_visitors WHERE id = ?", (visitor_id,))
@@ -432,10 +481,11 @@ def delete_unknown_visitor(visitor_id: int) -> bool:
                 except Exception:
                     pass
     cursor.execute("DELETE FROM unknown_visitors WHERE id = ?", (visitor_id,))
+    conn.commit()
+    conn.close()
     return True
 
 def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
-    """Deletes all unknown visitors (optionally by date) and their snapshots from disk."""
     conn = get_connection()
     cursor = conn.cursor()
     from backend.config import DATA_DIR, UNKNOWN_SNAPSHOTS_DIR
@@ -458,7 +508,6 @@ def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
                         fpath.unlink()
                     except Exception:
                         pass
-        # Remove date subfolder if empty or remaining
         date_folder = UNKNOWN_SNAPSHOTS_DIR / clean_date
         if date_folder.exists() and date_folder.is_dir():
             try:
@@ -482,7 +531,6 @@ def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
                         fpath.unlink()
                     except Exception:
                         pass
-        # Clean all items inside UNKNOWN_SNAPSHOTS_DIR
         if UNKNOWN_SNAPSHOTS_DIR.exists():
             for item in UNKNOWN_SNAPSHOTS_DIR.iterdir():
                 try:
@@ -496,24 +544,38 @@ def delete_all_unknown_visitors(date_str: Optional[str] = None) -> int:
         cursor.execute("DELETE FROM unknown_visitors")
         cursor.execute("DELETE FROM gate_events WHERE person_type = 'Unknown'")
 
+    conn.commit()
+    conn.close()
     return count
 
-def get_today_attendance(date_str: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_today_attendance(date_str: Optional[str] = None, record_mode: str = "live") -> List[Dict[str, Any]]:
     if not date_str:
         date_str = date.today().strftime("%Y-%m-%d")
     conn = get_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
-        SELECT a.id, a.staff_id, s.staff_code, s.name, s.designation, s.photo_path,
-               a.date, a.in_time, a.out_time, a.total_hours, a.in_count, a.out_count,
-               a.total_outside_hours, a.last_in_timestamp, a.last_out_timestamp,
-               a.status, a.last_seen, a.notes
-        FROM attendance_logs a
-        JOIN staff s ON a.staff_id = s.id
-        WHERE a.date = ?
-        ORDER BY a.in_time DESC
-    """, (date_str,))
+    if record_mode == "all":
+        cursor.execute("""
+            SELECT a.id, a.staff_id, s.staff_code, s.name, s.designation, s.photo_path,
+                   a.date, a.in_time, a.out_time, a.total_hours, a.in_count, a.out_count,
+                   a.total_outside_hours, a.last_in_timestamp, a.last_out_timestamp,
+                   a.status, a.last_seen, a.notes, a.record_mode
+            FROM attendance_logs a
+            JOIN staff s ON a.staff_id = s.id
+            WHERE a.date = ?
+            ORDER BY a.in_time DESC
+        """, (date_str,))
+    else:
+        cursor.execute("""
+            SELECT a.id, a.staff_id, s.staff_code, s.name, s.designation, s.photo_path,
+                   a.date, a.in_time, a.out_time, a.total_hours, a.in_count, a.out_count,
+                   a.total_outside_hours, a.last_in_timestamp, a.last_out_timestamp,
+                   a.status, a.last_seen, a.notes, a.record_mode
+            FROM attendance_logs a
+            JOIN staff s ON a.staff_id = s.id
+            WHERE a.date = ? AND (a.record_mode = ? OR (a.record_mode IS NULL AND ? = 'live'))
+            ORDER BY a.in_time DESC
+        """, (date_str, record_mode, record_mode))
     rows = cursor.fetchall()
     conn.close()
     
@@ -526,7 +588,6 @@ def get_today_attendance(date_str: Optional[str] = None) -> List[Dict[str, Any]]
         in_cnt = d.get("in_count") or 1
         out_cnt = d.get("out_count") or 0
 
-        # If currently "Working", calculate live ongoing hours for this current segment
         if d["status"] == "Working":
             last_in_str = d.get("last_in_timestamp") or f"{d['date']} {d['in_time']}"
             try:
@@ -537,7 +598,6 @@ def get_today_attendance(date_str: Optional[str] = None) -> List[Dict[str, Any]]
                 d["live_hours"] = round(total_work, 2)
             d["hours_outside"] = round(total_out, 2)
         else:
-            # Currently "Outside"
             d["live_hours"] = round(total_work, 2)
             last_out_str = d.get("last_out_timestamp") or (f"{d['date']} {d['out_time']}" if d.get("out_time") else None)
             if last_out_str:
@@ -556,13 +616,19 @@ def get_today_attendance(date_str: Optional[str] = None) -> List[Dict[str, Any]]
         
     return results
 
-def get_unknown_visitors(date_str: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_unknown_visitors(date_str: Optional[str] = None, record_mode: str = "live") -> List[Dict[str, Any]]:
     conn = get_connection()
     cursor = conn.cursor()
-    if date_str:
-        cursor.execute("SELECT * FROM unknown_visitors WHERE date = ? ORDER BY id DESC", (date_str,))
+    if record_mode == "all":
+        if date_str:
+            cursor.execute("SELECT * FROM unknown_visitors WHERE date = ? ORDER BY id DESC", (date_str,))
+        else:
+            cursor.execute("SELECT * FROM unknown_visitors ORDER BY id DESC LIMIT 100")
     else:
-        cursor.execute("SELECT * FROM unknown_visitors ORDER BY id DESC LIMIT 100")
+        if date_str:
+            cursor.execute("SELECT * FROM unknown_visitors WHERE date = ? AND (record_mode = ? OR (record_mode IS NULL AND ? = 'live')) ORDER BY id DESC", (date_str, record_mode, record_mode))
+        else:
+            cursor.execute("SELECT * FROM unknown_visitors WHERE (record_mode = ? OR (record_mode IS NULL AND ? = 'live')) ORDER BY id DESC LIMIT 100", (record_mode, record_mode))
     rows = cursor.fetchall()
     conn.close()
     
@@ -577,39 +643,77 @@ def get_unknown_visitors(date_str: Optional[str] = None) -> List[Dict[str, Any]]
         results.append(d)
     return results
 
-def get_attendance_summary_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
+def get_attendance_summary_stats(date_str: Optional[str] = None, record_mode: str = "live") -> Dict[str, Any]:
     if not date_str:
         date_str = date.today().strftime("%Y-%m-%d")
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Total registered staff
     cursor.execute("SELECT COUNT(*) FROM staff WHERE status = 'active'")
     total_staff = cursor.fetchone()[0]
     
-    # Today present
-    cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ?", (date_str,))
-    present_today = cursor.fetchone()[0]
-    
-    # Currently inside (Working)
-    cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ? AND status = 'Working'", (date_str,))
-    currently_inside = cursor.fetchone()[0]
-    
-    # Total unknowns today
-    cursor.execute("SELECT COUNT(*) FROM unknown_visitors WHERE date = ?", (date_str,))
-    unknowns_today = cursor.fetchone()[0]
+    if record_mode == "all":
+        cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ?", (date_str,))
+        present_today = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ? AND status = 'Working'", (date_str,))
+        currently_inside = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM unknown_visitors WHERE date = ?", (date_str,))
+        unknowns_today = cursor.fetchone()[0]
+    else:
+        cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ? AND (record_mode = ? OR (record_mode IS NULL AND ? = 'live'))", (date_str, record_mode, record_mode))
+        present_today = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM attendance_logs WHERE date = ? AND status = 'Working' AND (record_mode = ? OR (record_mode IS NULL AND ? = 'live'))", (date_str, record_mode, record_mode))
+        currently_inside = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM unknown_visitors WHERE date = ? AND (record_mode = ? OR (record_mode IS NULL AND ? = 'live'))", (date_str, record_mode, record_mode))
+        unknowns_today = cursor.fetchone()[0]
     
     conn.close()
     
     absent = max(0, total_staff - present_today)
     return {
         "date": date_str,
+        "record_mode": record_mode,
         "total_staff": total_staff,
         "present_today": present_today,
         "currently_inside": currently_inside,
         "absent_today": absent,
         "unknowns_today": unknowns_today
     }
+
+def get_gate_events(record_mode: str = "live", limit: int = 50) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    if record_mode == "all":
+        cursor.execute("""
+            SELECT g.*, s.name, s.designation, s.staff_code 
+            FROM gate_events g 
+            LEFT JOIN staff s ON g.staff_id = s.id 
+            ORDER BY g.id DESC LIMIT ?
+        """, (limit,))
+    else:
+        cursor.execute("""
+            SELECT g.*, s.name, s.designation, s.staff_code 
+            FROM gate_events g 
+            LEFT JOIN staff s ON g.staff_id = s.id 
+            WHERE (g.record_mode = ? OR (g.record_mode IS NULL AND ? = 'live'))
+            ORDER BY g.id DESC LIMIT ?
+        """, (record_mode, record_mode, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def clear_test_records() -> Dict[str, int]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM gate_events WHERE record_mode = 'test'")
+    del_events = cursor.rowcount
+    cursor.execute("DELETE FROM attendance_logs WHERE record_mode = 'test'")
+    del_att = cursor.rowcount
+    cursor.execute("DELETE FROM unknown_visitors WHERE record_mode = 'test'")
+    del_unk = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"gate_events": del_events, "attendance_logs": del_att, "unknown_visitors": del_unk}
 
 # ----------------- Module 2: Sarees & Taka Records -----------------
 
@@ -633,6 +737,8 @@ def add_saree_taka_record(challan_no: str, party_name: str, delivery_boy: str, p
     """, (now_str, today_str, challan_no, party_name, delivery_boy, product_type, expected_qty, counted_qty, diff, status, signed_by, notes))
     
     rec_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
     return rec_id
 
 def get_saree_taka_records(date_str: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -663,7 +769,6 @@ def add_inventory_event(material_type: str, direction: str, batch_count: int, lo
         conn.commit()
         success = True
     except sqlite3.IntegrityError:
-        # Lock token already exists -> prevented double counting!
         success = False
     finally:
         conn.close()
@@ -683,7 +788,6 @@ def get_inventory_records(date_str: Optional[str] = None) -> List[Dict[str, Any]
 # ----------------- System Data Cleanup -----------------
 
 def clear_all_test_data(clear_staff: bool = False):
-    """Clears all raw/dummy attendance logs, events, unknown visitors, and inventory records."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM attendance_logs")
@@ -694,10 +798,10 @@ def clear_all_test_data(clear_staff: bool = False):
     if clear_staff:
         cursor.execute("DELETE FROM staff")
     else:
-        # Delete demo seed staff TXS-001 through TXS-005
         cursor.execute("DELETE FROM staff WHERE staff_code LIKE 'TXS-00%'")
+    conn.commit()
+    conn.close()
     return True
-
 
 # ----------------- Commercial Platform: Camera Registry -----------------
 
@@ -706,7 +810,6 @@ def add_camera(data: Dict[str, Any]) -> str:
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Generate camera_id if not present
     camera_id = data.get("camera_id")
     if not camera_id:
         cursor.execute("SELECT COUNT(*) FROM cameras")
@@ -797,14 +900,12 @@ def update_camera_status(camera_id: str, status: str, fps: float, latency_ms: fl
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
-        UPDATE cameras
+        UPDATE cameras 
         SET status = ?, fps = ?, latency_ms = ?, last_error = ?, last_seen = ?
         WHERE camera_id = ?
-    """, (status, round(fps, 1), round(latency_ms, 1), last_error, now_str, camera_id))
+    """, (status, fps, latency_ms, last_error, now_str, camera_id))
     conn.commit()
     conn.close()
-
-# ----------------- Multi-Angle Staff Reference Photos -----------------
 
 def add_staff_reference_photo(staff_id: int, pose_type: str, photo_path: str, face_embedding: Optional[List[float]], quality_score: float = 1.0) -> int:
     conn = get_connection()
@@ -838,8 +939,6 @@ def delete_staff_reference_photo(photo_id: int) -> bool:
     conn.commit()
     conn.close()
     return True
-
-# ----------------- Product Counting & Category Operations -----------------
 
 def get_product_categories(tenant_id: str = "default") -> List[Dict[str, Any]]:
     conn = get_connection()

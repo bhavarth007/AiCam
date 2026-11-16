@@ -21,6 +21,7 @@ class VideoStreamManager:
 
         self.source_type = "file"
         self.source_path: Optional[str] = None
+        self.record_mode = "test"  # 'test' for video files/testing video; 'live' for webcam/RTSP
         self.cap: Optional[cv2.VideoCapture] = None
 
         self.running = False
@@ -47,6 +48,12 @@ class VideoStreamManager:
             self.stop_stream()
             self.source_type = source_type
             self.source_path = source_path
+
+            # Isolate recording modes: Testing video -> 'test' mode, Webcam/RTSP -> 'live' mode
+            if source_type in ("webcam", "rtsp", "ipcam", "hikvision") or (source_path and str(source_path).startswith(("rtsp://", "http://", "https://"))):
+                self.record_mode = "live"
+            else:
+                self.record_mode = "test"
 
             if source_type == "webcam":
                 idx = int(source_path) if (source_path and source_path.isdigit()) else CAMERA_INDEX
@@ -83,7 +90,7 @@ class VideoStreamManager:
             self.running = True
             self.thread = threading.Thread(target=self._capture_and_process_loop, daemon=True)
             self.thread.start()
-            print(f"[VideoStream] Stream started | source={self.source_type} | path={self.source_path}")
+            print(f"[VideoStream] Stream started | source={self.source_type} | record_mode={self.record_mode} | path={self.source_path}")
 
     def _try_open_testing_video(self):
         """Attempt to open the testing video; fall back to synthetic."""
@@ -91,6 +98,7 @@ class VideoStreamManager:
             self.cap = cv2.VideoCapture(TESTING_VIDEO_PATH)
             self.source_type = "file"
             self.source_path = TESTING_VIDEO_PATH
+            self.record_mode = "test"
             if not self.cap.isOpened():
                 self.source_type = "synthetic"
                 self.cap = None
@@ -109,6 +117,12 @@ class VideoStreamManager:
                 pass
             self.cap = None
 
+    def set_record_mode(self, mode: str):
+        """Explicitly switch record mode ('live' or 'test')."""
+        with self.lock:
+            self.record_mode = "test" if mode == "test" else "live"
+        print(f"[VideoStream] Record mode updated to: {self.record_mode}")
+
     # ─── Counting Controls ────────────────────────────────────────────────────
 
     def start_counting(self):
@@ -117,7 +131,7 @@ class VideoStreamManager:
             self.counting_active = True
             self.is_paused = False
             self.paused_preview_frame = None
-        print("[VideoStream] Live counting and video playback STARTED.")
+        print(f"[VideoStream] Live counting STARTED. Mode: {self.record_mode}")
 
     def stop_counting(self):
         """Pauses video playback and suspends AI line-crossing counting."""
@@ -126,7 +140,7 @@ class VideoStreamManager:
             self.is_paused = True
             self.paused_preview_frame = self.current_frame.copy() if self.current_frame is not None else None
             self.current_detections = []
-        print("[VideoStream] Live counting and video playback STOPPED/PAUSED.")
+        print("[VideoStream] Live counting STOPPED/PAUSED.")
 
     def toggle_counting(self) -> bool:
         with self.lock:
@@ -155,7 +169,7 @@ class VideoStreamManager:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 except Exception:
                     pass
-        print("[VideoStream] Session counts reset to 0. Video rewound to beginning.")
+        print(f"[VideoStream] Session counts reset to 0. Mode: {self.record_mode}. Video rewound.")
 
     # ─── Synthetic Gate Simulator ─────────────────────────────────────────────
 
@@ -225,11 +239,11 @@ class VideoStreamManager:
                     for y in range(0, h, 60):
                         cv2.line(standby_frame, (0, y), (w, y), (26, 36, 56), 1)
 
-                # Draw the gate line on the preview frame so user sees line and gate clearly
+                # Draw the door HUD overlay on the preview frame
                 if self.tracking_engine:
-                    standby_frame = self.tracking_engine.draw_hud_overlay(standby_frame, [], is_counting=False)
-
-                # Frame remains 100% clean and unobstructed
+                    standby_frame = self.tracking_engine.draw_hud_overlay(
+                        standby_frame, [], is_counting=False, record_mode=self.record_mode
+                    )
 
                 with self.lock:
                     self.current_hud_frame = standby_frame
@@ -263,7 +277,9 @@ class VideoStreamManager:
                         source=frame,
                         persist=True,
                         verbose=False,
-                        classes=[0]
+                        classes=[0],
+                        conf=0.35,
+                        iou=0.5
                     )
 
                     detections = []
@@ -287,7 +303,9 @@ class VideoStreamManager:
                             p_info["person_box"] = box.tolist()
 
                             if self.counting_active and not self.is_paused:
-                                self.tracking_engine.process_crossing(tid, foot_x, foot_y, w, h, p_info)
+                                self.tracking_engine.process_crossing(
+                                    tid, foot_x, foot_y, w, h, p_info, record_mode=self.record_mode
+                                )
 
                             detections.append(p_info)
 
@@ -298,7 +316,8 @@ class VideoStreamManager:
             # ── Draw HUD overlay ──────────────────────────────────────────────
             is_active = self.counting_active and not self.is_paused
             hud_frame = self.tracking_engine.draw_hud_overlay(
-                frame, self.current_detections, is_counting=is_active)
+                frame, self.current_detections, is_counting=is_active, record_mode=self.record_mode
+            )
 
             dt = time.time() - start_t
             if dt > 0:
@@ -316,7 +335,6 @@ class VideoStreamManager:
         """Encodes current HUD frame to JPEG for MJPEG browser stream."""
         with self.lock:
             if self.current_hud_frame is None:
-                # Emit a black frame so the img tag never hangs
                 blank = np.zeros((540, 960, 3), dtype=np.uint8)
                 blank[:] = (15, 23, 42)
                 ret, jpeg = cv2.imencode('.jpg', blank, [int(cv2.IMWRITE_JPEG_QUALITY), 70])

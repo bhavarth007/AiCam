@@ -23,7 +23,7 @@ VERSION = "1.0.0"
 # Camera & Detection Settings
 CAMERA_INDEX = 0  # Default webcam
 DEFAULT_CONFIDENCE_THRESHOLD = 0.50
-FACE_MATCH_THRESHOLD = 0.58  # Cosine similarity / distance threshold for face recognition
+FACE_MATCH_THRESHOLD = 0.44  # Cosine similarity threshold for CCTV biometric face recognition
 LINE_CROSSING_BUFFER = 25  # pixel margin for line crossing in/out logic
 LOCK_DOUBLE_COUNT_COOLDOWN = 10.0  # seconds to prevent duplicate counting of same person/object
 

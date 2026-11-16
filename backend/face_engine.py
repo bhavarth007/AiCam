@@ -8,7 +8,7 @@ from PIL import Image
 from typing import Tuple, List, Optional, Dict, Any
 from ultralytics import YOLO
 from backend.config import BASE_DIR, MODELS_DIR, UNKNOWN_SNAPSHOTS_DIR, STAFF_PHOTOS_DIR, FACE_MATCH_THRESHOLD
-from backend.database import get_staff_with_embeddings, log_unknown_visitor
+from backend.database import get_staff_with_embeddings, log_unknown_visitor, add_staff
 
 class FaceRecognitionEngine:
     def __init__(self):
@@ -37,10 +37,41 @@ class FaceRecognitionEngine:
         self.reload_registered_staff()
         print(f"[FaceEngine] Initialized successfully on {self.device}. Loaded {len(self.registered_faces)} staff embeddings.")
 
+    def _auto_seed_default_staff(self):
+        """Auto-seeds registered staff members from staff_photos if database is freshly initialized."""
+        defaults = [
+            ("FC-TXS-001", "Milan Hidad", "Master Weaver", "staff_FC_TXS_001.jpg"),
+            ("FC-TXS-417", "Bhavarth Hapani", "Mill Manager", "staff_FC_TXS_417.jpg"),
+            ("FC-TXS-002", "Vishal Morya", "Loom Supervisor", "staff_FC_TXS_002.jpg"),
+            ("FC-TXS-003", "Mahesh Ratod", "Quality Checker", "staff_FC_TXS_003.jpg"),
+        ]
+        for code, name, desig, photo_name in defaults:
+            p = os.path.join(STAFF_PHOTOS_DIR, photo_name)
+            if os.path.exists(p):
+                img = cv2.imread(p)
+                if img is not None:
+                    emb = self.compute_embedding(img)
+                    if emb is not None:
+                        fid = "face_" + code.lower().replace("-", "_")
+                        try:
+                            add_staff(
+                                name=name,
+                                designation=desig,
+                                face_id=fid,
+                                face_embedding=emb.tolist(),
+                                photo_path=p,
+                                staff_code=code
+                            )
+                        except Exception as e:
+                            print(f"[FaceEngine] Auto-seed staff notice: {e}")
+
     def reload_registered_staff(self):
         """Reload staff list and cached face embeddings from database, including multi-angle reference photos."""
         import json
         staff_list = get_staff_with_embeddings()
+        if not staff_list:
+            self._auto_seed_default_staff()
+            staff_list = get_staff_with_embeddings()
         valid_staff = []
 
         ref_by_staff = {}

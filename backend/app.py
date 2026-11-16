@@ -12,6 +12,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+class DoorPoint(BaseModel):
+    x: float
+    y: float
+
+class DoorPolygonPayload(BaseModel):
+    polygon: List[DoorPoint]
+    flip_direction: Optional[bool] = False
+
+
 from backend.config import (
     BASE_DIR, DATA_DIR, FRONTEND_DIR, STAFF_PHOTOS_DIR, 
     UNKNOWN_SNAPSHOTS_DIR, UPLOADED_VIDEOS_DIR, APP_NAME, VERSION
@@ -21,7 +30,7 @@ from backend.database import (
     get_today_attendance, get_unknown_visitors, get_attendance_summary_stats,
     add_saree_taka_record, get_saree_taka_records, clear_all_test_data,
     add_inventory_event, get_inventory_records, record_gate_event,
-    delete_unknown_visitor, delete_all_unknown_visitors
+    delete_unknown_visitor, delete_all_unknown_visitors, clear_test_records, get_gate_events
 )
 from backend.face_engine import FaceRecognitionEngine
 from backend.tracking_engine import GateTrackingEngine
@@ -95,14 +104,16 @@ def get_camera_snapshot():
     return Response(content=jpeg_bytes, media_type="image/jpeg")
 
 @app.get("/api/stats")
-def get_stats(date_str: Optional[str] = None):
-    """Returns real-time KPIs and system status."""
-    today_stats = get_attendance_summary_stats(date_str)
+def get_stats(date_str: Optional[str] = None, mode: str = Query("live")):
+    """Returns real-time KPIs and system status filtered by record_mode."""
+    today_stats = get_attendance_summary_stats(date_str, record_mode=mode)
     return {
         **today_stats,
         "fps": stream_manager.fps,
         "source_type": stream_manager.source_type,
         "source_path": stream_manager.source_path,
+        "record_mode": stream_manager.record_mode,
+        "query_mode": mode,
         "session_in": tracking_engine.count_in,
         "session_out": tracking_engine.count_out,
         "session_unknown": tracking_engine.count_unknown,
@@ -113,8 +124,10 @@ def get_stats(date_str: Optional[str] = None):
     }
 
 @app.get("/api/events/recent")
-def get_recent_events():
-    """Returns the latest gate crossing events for live feed."""
+def get_recent_events(mode: Optional[str] = Query(None)):
+    """Returns the latest gate crossing events for live feed, optionally filtered by mode."""
+    if mode:
+        return [e for e in tracking_engine.recent_events if e.get("record_mode", "live") == mode]
     return tracking_engine.recent_events
 
 @app.post("/api/video/start_counting")
@@ -217,6 +230,57 @@ def get_gate_line():
         "y2": tracking_engine.line_y2_norm,
         "orientation": tracking_engine.line_orientation,
         "ratio": tracking_engine.line_pos_ratio,
+    }
+
+@app.get("/api/tracking/door_polygon")
+def get_door_polygon():
+    """Returns current 4-point door polygon and settings."""
+    return tracking_engine.get_door_polygon()
+
+@app.post("/api/tracking/door_polygon")
+def set_door_polygon(payload: DoorPolygonPayload):
+    """Sets the 4-point door polygon and crossing direction."""
+    points = [{"x": p.x, "y": p.y} for p in payload.polygon]
+    tracking_engine.set_door_polygon(points, payload.flip_direction or False)
+    return {"status": "success", "data": tracking_engine.get_door_polygon()}
+
+@app.post("/api/tracking/set_polygon")
+def set_door_polygon_form(
+    x1: float = Form(...), y1: float = Form(...),
+    x2: float = Form(...), y2: float = Form(...),
+    x3: float = Form(...), y3: float = Form(...),
+    x4: float = Form(...), y4: float = Form(...),
+    flip_direction: bool = Form(False)
+):
+    points = [
+        {"x": x1, "y": y1},
+        {"x": x2, "y": y2},
+        {"x": x3, "y": y3},
+        {"x": x4, "y": y4}
+    ]
+    tracking_engine.set_door_polygon(points, flip_direction)
+    return {"status": "success", "data": tracking_engine.get_door_polygon()}
+
+@app.post("/api/tracking/set_mode")
+def set_tracking_mode(mode: str = Form(...)):
+    """Sets active recording mode ('live' or 'test')."""
+    clean_mode = "test" if mode == "test" else "live"
+    stream_manager.set_record_mode(clean_mode)
+    return {"status": "success", "record_mode": stream_manager.record_mode}
+
+@app.post("/api/admin/clear_test_records")
+def clear_test_data_endpoint():
+    """Wipes test-run gate events, attendance, and unknown visitors. Leaves live data 100% untouched."""
+    res = clear_test_records()
+    if stream_manager.record_mode == "test":
+        tracking_engine.count_in = 0
+        tracking_engine.count_out = 0
+        tracking_engine.count_unknown = 0
+        tracking_engine.recent_events = [e for e in tracking_engine.recent_events if e.get("record_mode") != "test"]
+    return {
+        "status": "success",
+        "deleted": res,
+        "message": f"Test records cleared: {res['gate_events']} events, {res['attendance_logs']} attendance rows, {res['unknown_visitors']} visitors."
     }
 
 # ----------------- Staff Registration & Face ID Endpoints -----------------
@@ -350,31 +414,33 @@ def clear_system_data(clear_staff: bool = Form(False)):
 # ----------------- Attendance Reports Endpoints -----------------
 
 @app.get("/api/attendance/today")
-def get_today_report():
+def get_today_report(mode: str = Query("live")):
     """Returns today's detailed attendance log with in/out times and calculated working hours."""
-    records = get_today_attendance()
+    records = get_today_attendance(record_mode=mode)
     return {
         "date": date.today().strftime("%Y-%m-%d"),
+        "record_mode": mode,
         "total_records": len(records),
         "records": records
     }
 
 @app.get("/api/attendance/report")
-def get_custom_report(date_str: Optional[str] = Query(None, alias="date")):
+def get_custom_report(date_str: Optional[str] = Query(None, alias="date"), mode: str = Query("live")):
     """Returns attendance for a specific date (YYYY-MM-DD)."""
     target_date = date_str or date.today().strftime("%Y-%m-%d")
-    records = get_today_attendance(target_date)
-    stats = get_attendance_summary_stats(target_date)
+    records = get_today_attendance(target_date, record_mode=mode)
+    stats = get_attendance_summary_stats(target_date, record_mode=mode)
     return {
         "date": target_date,
+        "record_mode": mode,
         "stats": stats,
         "records": records
     }
 
 @app.get("/api/unknowns")
-def list_unknowns(date_str: Optional[str] = Query(None, alias="date")):
+def list_unknowns(date_str: Optional[str] = Query(None, alias="date"), mode: str = Query("live")):
     """Returns photos and timestamps of unregistered/unknown visitors captured by AI camera."""
-    return get_unknown_visitors(date_str)
+    return get_unknown_visitors(date_str, record_mode=mode)
 
 @app.delete("/api/unknowns/{visitor_id}")
 def remove_unknown_visitor(visitor_id: int):
