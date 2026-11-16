@@ -170,7 +170,6 @@
                    src=""
                    playsinline
                    muted
-                   loop
                    crossorigin="anonymous"
                    style="display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 10px;">
             </video>
@@ -247,71 +246,29 @@
               </div>
 
               <!-- Gate Geometry & Zone Editor Panel -->
-              <div id="gateLinePanel" style="background: rgba(6,182,212,0.07); border: 1px solid rgba(6,182,212,0.25); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 320px;">
+              <div id="gateLinePanel" style="background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.3); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 330px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.78rem; font-weight: 700; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">🎯 Gate & Door Geometry</span>
+                  <span style="font-size: 0.8rem; font-weight: 800; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">🎯 Door Borderline &amp; 4-Corner Quad</span>
                   <div style="display: flex; gap: 4px;">
-                    <button id="btnModeBox" class="btn btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700;" onclick="setGateGeometryMode('box')">🚪 Doorway Box</button>
-                    <button id="btnModeLine" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700;" onclick="setGateGeometryMode('line')">📏 Tripwire Line</button>
-                    <button id="btnToggleDrawMode" class="btn btn-secondary"
-                            style="padding: 0.25rem 0.6rem; font-size: 0.72rem; font-weight: 700; border-color: rgba(251,191,36,0.5); color: #fbbf24;"
-                            onclick="toggleGateLineDrawMode()">
-                      ✏️ Draw
-                    </button>
+                    <button id="btnSnapTestVideoDoor" class="btn btn-primary" style="padding: 0.22rem 0.6rem; font-size: 0.72rem; font-weight: 700; background: #0284c7;" onclick="snapToTestingVideoDoor()" title="Aligns door quad perfectly with testing video doorway">🎬 Testing Video Door</button>
+                    <button id="btnCenterDoor" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="snapToCenterDoor()" title="Center door square">🚪 Center Door</button>
+                    <button id="btnFlipDir" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; color: #38bdf8;" onclick="toggleFlipDirection()" title="Flip IN vs OUT direction">🔄 Flip IN/OUT</button>
+                    <button id="btnToggleDrawMode" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; border-color: rgba(251,191,36,0.5); color: #fbbf24;" onclick="toggleGateLineDrawMode()">✏️ Drag Points</button>
                   </div>
                 </div>
 
-                <!-- 1-Click Office Door Presets -->
-                <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; background: rgba(16,185,129,0.12); border: 1px dashed rgba(16,185,129,0.45); padding: 5px 8px; border-radius: 6px;">
-                  <span style="font-size: 0.72rem; color: #34d399; font-weight: 700;">Office Presets:</span>
-                  <button class="btn btn-success" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; font-weight: 700; background: #059669; border: none; color: #fff; cursor: pointer;" onclick="snapToOfficeDoorBox()" title="Snaps Doorway Gate Zone to your exact glass door behind chair">🎯 Snap to My Office Door Box</button>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #38bdf8;" onclick="snapToDoorHorizontalLine()" title="Horizontal crossbar line across door threshold">📏 Horizontal Line</button>
-                  <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; color: #94a3b8;" onclick="setGatePreset('right_gate')" title="Factory doorway preset for testing video">🎬 Factory Door</button>
+                <!-- 4 Editable Corners Display -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 0.72rem; font-family: monospace; background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px;">
+                  <div><span style="color: #fbbf24; font-weight: 700;">● P1 (TL):</span> <span id="polyP1" style="color: #e2e8f0;">0.170, 0.150</span></div>
+                  <div><span style="color: #38bdf8; font-weight: 700;">● P2 (TR):</span> <span id="polyP2" style="color: #e2e8f0;">0.410, 0.150</span></div>
+                  <div><span style="color: #34d399; font-weight: 700;">● P4 (BL):</span> <span id="polyP4" style="color: #e2e8f0;">0.160, 0.940</span></div>
+                  <div><span style="color: #a78bfa; font-weight: 700;">● P3 (BR):</span> <span id="polyP3" style="color: #e2e8f0;">0.430, 0.940</span></div>
                 </div>
 
-                <!-- Controls for Box mode -->
-                <div id="boxControlsContainer" style="display: flex; flex-direction: column; gap: 0.4rem;">
-                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↔ Width:</span>
-                    <input type="range" id="boxWidthSlider" min="0.08" max="0.80" step="0.01" value="0.26" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onBoxWidthChangeLive(this.value)" />
-                    <span id="boxWidthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">26%</span>
-                  </div>
-                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↕ Height:</span>
-                    <input type="range" id="boxHeightSlider" min="0.08" max="0.95" step="0.01" value="0.61" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onBoxHeightChangeLive(this.value)" />
-                    <span id="boxHeightValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">61%</span>
-                  </div>
-                </div>
-
-                <!-- Controls for Line mode -->
-                <div id="lineControlsContainer" style="display: none; flex-direction: column; gap: 0.4rem;">
-                  <!-- Line length slider -->
-                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↔ Length:</span>
-                    <input type="range" id="lineLengthSlider" min="0.10" max="1.0" step="0.01" value="0.70" style="flex: 1; min-width: 90px; accent-color: #22d3ee; cursor: pointer;" oninput="onLineLengthChangeLive(this.value)" onchange="sendLineToServer()" />
-                    <span id="lineLengthValue" style="font-size: 0.78rem; font-family: monospace; color: #22d3ee; font-weight: 700; min-width: 38px;">100%</span>
-                  </div>
-
-                  <!-- Line position slider -->
-                  <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">↕ Position:</span>
-                    <input type="range" id="linePosSlider" min="0.05" max="0.95" step="0.01" value="0.65" style="flex: 1; min-width: 90px; accent-color: #a78bfa; cursor: pointer;" oninput="onLinePosChangeLive(this.value)" onchange="sendLineToServer()" />
-                    <span id="linePosValue" style="font-size: 0.78rem; font-family: monospace; color: #a78bfa; font-weight: 700; min-width: 38px;">65%</span>
-                  </div>
-
-                  <!-- Orientation buttons -->
-                  <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600; min-width: 65px;">Direction:</span>
-                    <button id="btnLineHoriz" class="btn btn-primary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('horizontal')">— Horizontal</button>
-                    <button id="btnLineVert" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.73rem;" onclick="setLineOrientation('vertical')">| Vertical</button>
-                    <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="flipGateLineDirection()" title="Flip Inside / Outside direction">🔄 Flip Dir</button>
-                  </div>
-                </div>
-
-                <!-- Coordinates & Helper text -->
-                <div style="font-size: 0.70rem; color: #94a3b8; font-family: monospace; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center;">
-                  <span id="gateCoordinatesText">Door Zone: (<span id="boxCoordX">0.17</span>, <span id="boxCoordY">0.35</span>) <span id="boxCoordW">26%</span>x<span id="boxCoordH">61%</span></span>
-                  <span style="color: #34d399; font-weight: 700;">● Depth-Aware AI</span>
+                <!-- Borderline Crossing Note -->
+                <div style="font-size: 0.70rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; background: rgba(16,185,129,0.08); border: 1px dashed rgba(16,185,129,0.35); padding: 4px 8px; border-radius: 5px;">
+                  <span style="color: #34d399; font-weight: 700;">🟢 Active Threshold Borderline: P4 ──▶ P3</span>
+                  <span style="color: #cbd5e1; font-family: monospace;">Drag ANY corner handle on video to adjust dimension</span>
                 </div>
               </div>
 
@@ -323,6 +280,27 @@
                 <!-- Multi-Camera Responsive Grid (Shown when 2, 4, or 8 Grid selected) -->
         <div id="multiCameraGrid" style="display: none; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem; margin-bottom: 1rem;">
           <!-- Dynamically populated camera feed tiles -->
+        </div>
+
+        <!-- Live vs Testing Video Storage Mode Selector -->
+        <div style="background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 0.65rem 1rem; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">Storage Mode:</span>
+            <button id="btnViewLiveRecords" class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.76rem; font-weight: 700;" onclick="switchStorageMode('live')">
+              🔴 Live Camera Records
+            </button>
+            <button id="btnViewTestRecords" class="btn btn-secondary" style="padding: 0.3rem 0.75rem; font-size: 0.76rem;" onclick="switchStorageMode('testing')">
+              🧪 Testing Video Records
+            </button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <span id="storageModeBadge" style="font-size: 0.72rem; font-family: monospace; color: #34d399; font-weight: 700;">
+              🟢 Active: Live Mill Data
+            </span>
+            <button id="btnClearTestRecordsBtn" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.72rem; border-color: rgba(244,63,94,0.4); color: #fb7185;" onclick="clearTestRecordsNow()">
+              🗑️ Clear Test Records
+            </button>
+          </div>
         </div>
 
         <!-- Live Gate Events Ticker -->
@@ -879,6 +857,7 @@
             <button id="btnZoomIn" class="btn btn-secondary btn-sm" onclick="zoomInLightbox()" style="padding: 2px 8px; font-size: 0.8rem;" title="Zoom In (+)">➕ Zoom In</button>
             <button id="btnZoomOut" class="btn btn-secondary btn-sm" onclick="zoomOutLightbox()" style="padding: 2px 8px; font-size: 0.8rem;" title="Zoom Out (-)">➖ Zoom Out</button>
             <button id="btnZoomReset" class="btn btn-secondary btn-sm" onclick="resetLightboxZoom()" style="padding: 2px 8px; font-size: 0.8rem;" title="Reset Zoom">🔄 Reset</button>
+            <button id="btnFullscreenModal" class="btn btn-emerald btn-sm" onclick="toggleFullscreenLightbox()" style="padding: 2px 10px; font-size: 0.8rem; font-weight: 700;" title="Full Screen (⛶)">⛶ Fullscreen</button>
           </div>
           <button class="lightbox-close-btn" onclick="closeImageLightbox()" title="Close (Esc)">✕</button>
       </div>

@@ -198,7 +198,7 @@ function bootApp() {
                 } else if (currentTab === 'reports') {
                     fetchTodayReportAuto();
                 }
-            }, 1000);
+            }, 250);
         } else if (savedSource !== 'webcam' && !isGitHubPages) {
             initStandaloneRealVideoMode(isSavedActive, savedSource);
         }
@@ -308,6 +308,173 @@ function switchTab(tabId) {
 const DEFAULT_GATE_BOX = { x: 0.170, y: 0.150, w: 0.255, h: 0.800 };
 // Calibrated horizontal tripwire line across door threshold:
 const DEFAULT_GATE_LINE = { x1: 0.170, y1: 0.780, x2: 0.425, y2: 0.780 };
+
+const DEFAULT_GATE_POLYGON = [
+    { x: 0.120, y: 0.100 },  // P1: Top-Left
+    { x: 0.440, y: 0.100 },  // P2: Top-Right
+    { x: 0.440, y: 0.520 },  // P3: Bottom-Right (Threshold Right)
+    { x: 0.120, y: 0.520 }   // P4: Bottom-Left (Threshold Left)
+];
+
+function loadSavedGatePolygon() {
+    try {
+        const s = localStorage.getItem('aicam_gate_polygon');
+        if (s) {
+            const p = JSON.parse(s);
+            if (Array.isArray(p) && p.length === 4) {
+                return p.map(pt => ({
+                    x: Math.max(0, Math.min(1, Number(pt.x) || 0)),
+                    y: Math.max(0, Math.min(1, Number(pt.y) || 0))
+                }));
+            }
+        }
+    } catch(e) {}
+    return DEFAULT_GATE_POLYGON.map(pt => ({ ...pt }));
+}
+
+let gatePolygon = loadSavedGatePolygon();
+let flipGateDirection = localStorage.getItem('aicam_gate_flip_dir') === 'true';
+window.gatePolygon = gatePolygon;
+
+function saveGatePolygonToStorage() {
+    try {
+        localStorage.setItem('aicam_gate_polygon', JSON.stringify(gatePolygon));
+        localStorage.setItem('aicam_gate_flip_dir', String(flipGateDirection));
+    } catch(e) {}
+}
+
+async function sendDoorPolygonToServer() {
+    try {
+        await fetch(getApiUrl('/api/tracking/door_polygon'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                polygon: gatePolygon,
+                flip_direction: flipGateDirection
+            })
+        });
+    } catch(e) {
+        console.warn('Sync door polygon warning:', e);
+    }
+}
+
+async function loadDoorPolygonFromServer() {
+    try {
+        const res = await fetch(getApiUrl('/api/tracking/door_polygon'));
+        if (res.ok) {
+            const data = await res.json();
+            if (data.polygon && data.polygon.length === 4) {
+                gatePolygon = data.polygon;
+                flipGateDirection = !!data.flip_direction;
+                window.gatePolygon = gatePolygon;
+                saveGatePolygonToStorage();
+                updatePolygonUI();
+                drawLineOnCanvas();
+            }
+        }
+    } catch(e) {}
+}
+
+function updatePolygonUI() {
+    const el1 = document.getElementById('polyP1');
+    const el2 = document.getElementById('polyP2');
+    const el3 = document.getElementById('polyP3');
+    const el4 = document.getElementById('polyP4');
+    if (el1 && gatePolygon[0]) el1.textContent = `${gatePolygon[0].x.toFixed(3)}, ${gatePolygon[0].y.toFixed(3)}`;
+    if (el2 && gatePolygon[1]) el2.textContent = `${gatePolygon[1].x.toFixed(3)}, ${gatePolygon[1].y.toFixed(3)}`;
+    if (el3 && gatePolygon[2]) el3.textContent = `${gatePolygon[2].x.toFixed(3)}, ${gatePolygon[2].y.toFixed(3)}`;
+    if (el4 && gatePolygon[3]) el4.textContent = `${gatePolygon[3].x.toFixed(3)}, ${gatePolygon[3].y.toFixed(3)}`;
+}
+
+window.snapToTestingVideoDoor = function() {
+    gatePolygon = [
+        { x: 0.120, y: 0.100 },  // P1: Top-Left
+        { x: 0.440, y: 0.100 },  // P2: Top-Right
+        { x: 0.440, y: 0.520 },  // P3: Bottom-Right
+        { x: 0.120, y: 0.520 }   // P4: Bottom-Left
+    ];
+    flipGateDirection = false;
+    saveGatePolygonToStorage();
+    sendDoorPolygonToServer();
+    updatePolygonUI();
+    drawLineOnCanvas();
+    showNotification('🎬 Door Quad snapped to Testing Video doorway!', 'success');
+};
+
+window.snapToCenterDoor = function() {
+    gatePolygon = [
+        { x: 0.350, y: 0.180 },
+        { x: 0.650, y: 0.180 },
+        { x: 0.650, y: 0.880 },
+        { x: 0.350, y: 0.880 }
+    ];
+    saveGatePolygonToStorage();
+    sendDoorPolygonToServer();
+    updatePolygonUI();
+    drawLineOnCanvas();
+    showNotification('🚪 Reset to Center Doorway quad', 'info');
+};
+
+window.toggleFlipDirection = function() {
+    flipGateDirection = !flipGateDirection;
+    saveGatePolygonToStorage();
+    sendDoorPolygonToServer();
+    drawLineOnCanvas();
+    showNotification(flipGateDirection ? '🔄 Flipped: P4->P3 floor crossing = OUT' : '🔄 Standard: P4->P3 floor crossing = IN', 'info');
+};
+
+window.switchStorageMode = function(mode) {
+    const isTest = (mode === 'testing' || mode === 'test');
+    reportsViewMode = isTest ? 'testing' : 'live';
+    window.reportsViewMode = reportsViewMode;
+
+    const btnLive1 = document.getElementById('btnViewLiveRecords');
+    const btnTest1 = document.getElementById('btnViewTestRecords');
+    const btnLive2 = document.getElementById('btnReportsViewLive');
+    const btnTest2 = document.getElementById('btnReportsViewTest');
+    const badge = document.getElementById('storageModeBadge');
+    const banner = document.getElementById('reportSourceBanner');
+
+    if (isTest) {
+        if (btnLive1) btnLive1.className = 'btn btn-secondary';
+        if (btnTest1) btnTest1.className = 'btn btn-primary';
+        if (btnLive2) btnLive2.className = 'btn btn-secondary';
+        if (btnTest2) btnTest2.className = 'btn btn-primary';
+        if (badge) badge.innerHTML = '<span style="color: #38bdf8;">🧪 Active: Testing Video Records (Live Data Safe)</span>';
+        if (banner) banner.innerHTML = '<span>🎬 Displaying: <strong>Testing Video Benchmark Data</strong></span>';
+    } else {
+        if (btnLive1) btnLive1.className = 'btn btn-primary';
+        if (btnTest1) btnTest1.className = 'btn btn-secondary';
+        if (btnLive2) btnLive2.className = 'btn btn-primary';
+        if (btnTest2) btnTest2.className = 'btn btn-secondary';
+        if (badge) badge.innerHTML = '<span style="color: #34d399;">🟢 Active: Live Mill Data</span>';
+        if (banner) banner.innerHTML = '<span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>';
+    }
+
+    try {
+        const fd = new FormData();
+        fd.append('mode', isTest ? 'test' : 'live');
+        fetch(getApiUrl('/api/tracking/set_mode'), { method: 'POST', body: fd });
+    } catch(e) {}
+
+    fetchStats();
+    fetchRecentEvents();
+    fetchTodayReport();
+};
+
+window.clearTestRecordsNow = async function() {
+    if (!confirm('Are you sure you want to clear all testing video logs and attendance? Live mill records will remain 100% untouched.')) return;
+    try {
+        const res = await fetch(getApiUrl('/api/admin/clear_test_records'), { method: 'POST' });
+        const data = await res.json();
+        showNotification(data.message || 'Test records wiped successfully', 'success');
+        fetchStats();
+        fetchRecentEvents();
+        fetchTodayReport();
+    } catch(e) {
+        showNotification('Error clearing test records: ' + e.message, 'error');
+    }
+};
 
 function loadSavedGateBox() {
     try {
@@ -462,29 +629,37 @@ function canvasPxToNorm(canvas, px, py) {
 
 // Hit test: detects handles or body for Box Mode vs Line Mode
 function hitTest(nx, ny) {
-    const r = HANDLE_RADIUS_NORM * 1.5;
-    if (gateGeometry === 'box') {
-        const x1 = gateBox.x, y1 = gateBox.y;
-        const x2 = gateBox.x + gateBox.w, y2 = gateBox.y + gateBox.h;
-        if (Math.hypot(nx - x1, ny - y1) < r) return 'corner_tl';
-        if (Math.hypot(nx - x2, ny - y1) < r) return 'corner_tr';
-        if (Math.hypot(nx - x1, ny - y2) < r) return 'corner_bl';
-        if (Math.hypot(nx - x2, ny - y2) < r) return 'corner_br';
-        if (nx >= x1 && nx <= x2 && ny >= y1 && ny <= y2) return 'box';
-        return null;
-    } else {
+    const r = HANDLE_RADIUS_NORM * 1.8;
+    // Check 4 polygon corners first
+    if (gatePolygon && gatePolygon.length === 4) {
+        for (let i = 0; i < 4; i++) {
+            if (Math.hypot(nx - gatePolygon[i].x, ny - gatePolygon[i].y) < r) {
+                return `corner_${i}`;
+            }
+        }
+        // Threshold borderline (P4 -> P3)
+        const p4 = gatePolygon[3], p3 = gatePolygon[2];
+        const dx = p3.x - p4.x, dy = p3.y - p4.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 > 0) {
+            const t = Math.max(0, Math.min(1, ((nx - p4.x) * dx + (ny - p4.y) * dy) / len2));
+            const projX = p4.x + t * dx, projY = p4.y + t * dy;
+            if (Math.hypot(nx - projX, ny - projY) < r) return 'threshold_line';
+        }
+        // Check inside quad
+        const xs = gatePolygon.map(p => p.x);
+        const ys = gatePolygon.map(p => p.y);
+        if (nx >= Math.min(...xs) && nx <= Math.max(...xs) && ny >= Math.min(...ys) && ny <= Math.max(...ys)) {
+            return 'inside_poly';
+        }
+    }
+
+    if (gateGeometry === 'line') {
         const { x1, y1, x2, y2 } = gateLine;
         if (Math.hypot(nx - x1, ny - y1) < r) return 'p1';
         if (Math.hypot(nx - x2, ny - y2) < r) return 'p2';
-        const dx = x2 - x1, dy = y2 - y1;
-        const len2 = dx*dx + dy*dy;
-        if (len2 > 0) {
-            const t = Math.max(0, Math.min(1, ((nx-x1)*dx + (ny-y1)*dy) / len2));
-            const projX = x1 + t*dx, projY = y1 + t*dy;
-            if (Math.hypot(nx - projX, ny - projY) < r * 1.5) return 'line';
-        }
-        return null;
     }
+    return null;
 }
 
 let sendLineTimeout = null;
@@ -557,45 +732,40 @@ function onCanvasMouseMove(e) {
         return;
     }
 
-    if (gateGeometry === 'box') {
-        if (dragTarget === 'new_box') {
-            const curX = Math.max(0, Math.min(1, nx));
-            const curY = Math.max(0, Math.min(1, ny));
-            gateBox.x = Math.min(dragStartX, curX);
-            gateBox.y = Math.min(dragStartY, curY);
-            gateBox.w = Math.max(0.08, Math.abs(curX - dragStartX));
-            gateBox.h = Math.max(0.08, Math.abs(curY - dragStartY));
-        } else if (dragTarget === 'corner_br') {
-            gateBox.w = Math.max(0.08, nx - gateBox.x);
-            gateBox.h = Math.max(0.08, ny - gateBox.y);
-        } else if (dragTarget === 'corner_tl') {
-            const oldX2 = gateBox.x + gateBox.w;
-            const oldY2 = gateBox.y + gateBox.h;
-            gateBox.x = Math.min(oldX2 - 0.08, nx);
-            gateBox.y = Math.min(oldY2 - 0.08, ny);
-            gateBox.w = oldX2 - gateBox.x;
-            gateBox.h = oldY2 - gateBox.y;
-        } else if (dragTarget === 'corner_tr') {
-            const oldX1 = gateBox.x;
-            const oldY2 = gateBox.y + gateBox.h;
-            gateBox.w = Math.max(0.08, nx - oldX1);
-            gateBox.y = Math.min(oldY2 - 0.08, ny);
-            gateBox.h = oldY2 - gateBox.y;
-        } else if (dragTarget === 'corner_bl') {
-            const oldX2 = gateBox.x + gateBox.w;
-            const oldY1 = gateBox.y;
-            gateBox.x = Math.min(oldX2 - 0.08, nx);
-            gateBox.w = oldX2 - gateBox.x;
-            gateBox.h = Math.max(0.08, ny - oldY1);
-        } else if (dragTarget === 'box') {
-            const dx = nx - dragStartX;
-            const dy = ny - dragStartY;
-            gateBox.x = Math.max(0, Math.min(1 - gateBox.w, gateBox.x + dx));
-            gateBox.y = Math.max(0, Math.min(1 - gateBox.h, gateBox.y + dy));
-            dragStartX = nx;
-            dragStartY = ny;
+    if (dragTarget && dragTarget.startsWith('corner_')) {
+        const idx = parseInt(dragTarget.split('_')[1], 10);
+        if (idx >= 0 && idx < 4 && gatePolygon[idx]) {
+            gatePolygon[idx].x = Math.max(0, Math.min(1, nx));
+            gatePolygon[idx].y = Math.max(0, Math.min(1, ny));
+            updatePolygonUI();
+            saveGatePolygonToStorage();
         }
-        if (isDragging) updateBoxSliders();
+    } else if (dragTarget === 'inside_poly') {
+        const dx = nx - dragStartX;
+        const dy = ny - dragStartY;
+        const minX = Math.min(...gatePolygon.map(p => p.x));
+        const maxX = Math.max(...gatePolygon.map(p => p.x));
+        const minY = Math.min(...gatePolygon.map(p => p.y));
+        const maxY = Math.max(...gatePolygon.map(p => p.y));
+        const cdx = Math.max(-minX, Math.min(1 - maxX, dx));
+        const cdy = Math.max(-minY, Math.min(1 - maxY, dy));
+        for (let i = 0; i < 4; i++) {
+            gatePolygon[i].x += cdx;
+            gatePolygon[i].y += cdy;
+        }
+        dragStartX = nx;
+        dragStartY = ny;
+        updatePolygonUI();
+        saveGatePolygonToStorage();
+    } else if (dragTarget === 'threshold_line') {
+        const dy = ny - dragStartY;
+        gatePolygon[2].y = Math.max(0, Math.min(1, gatePolygon[2].y + dy));
+        gatePolygon[3].y = Math.max(0, Math.min(1, gatePolygon[3].y + dy));
+        dragStartY = ny;
+        updatePolygonUI();
+        saveGatePolygonToStorage();
+    } else if (gateGeometry === 'box') {
+        // legacy box fallback
         saveGateBoxToStorage();
     } else {
         if (dragTarget === 'new') {
@@ -633,11 +803,10 @@ async function onCanvasMouseUp(e) {
     const canvas = document.getElementById('gateLineCanvas');
     if (canvas) canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
 
-    if (gateGeometry === 'box') {
-        saveGateBoxToStorage();
-    } else {
+    saveGatePolygonToStorage();
+    await sendDoorPolygonToServer();
+    if (gateGeometry === 'line') {
         await sendLineToServer();
-        saveGateLineToStorage();
     }
 }
 
@@ -698,24 +867,63 @@ function drawLineOnCanvas() {
         ctx.stroke();
         ctx.restore();
 
-        // 4 Circular Corner Handles for easy dragging
-        const corners = [
-            { x: bx, y: by },
-            { x: bx + bw, y: by },
-            { x: bx, y: by + bh },
-            { x: bx + bw, y: by + bh }
-        ];
-        corners.forEach(pt => {
+        // Render 4-Point Door Polygon if available
+        if (gatePolygon && gatePolygon.length === 4) {
+            const p0 = { x: gatePolygon[0].x * W, y: gatePolygon[0].y * H };
+            const p1 = { x: gatePolygon[1].x * W, y: gatePolygon[1].y * H };
+            const p2 = { x: gatePolygon[2].x * W, y: gatePolygon[2].y * H };
+            const p3 = { x: gatePolygon[3].x * W, y: gatePolygon[3].y * H };
+
+            // Polygon translucent fill
             ctx.save();
-            ctx.fillStyle = lineColor;
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.lineTo(p3.x, p3.y);
+            ctx.closePath();
+            ctx.fillStyle = isActive ? 'rgba(6, 182, 212, 0.12)' : 'rgba(251, 191, 36, 0.08)';
             ctx.fill();
+            ctx.strokeStyle = lineColor;
+            ctx.lineWidth = 2;
             ctx.stroke();
             ctx.restore();
-        });
+
+            // Threshold Borderline (P4 to P3)
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(p3.x, p3.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.strokeStyle = '#10b981';
+            ctx.lineWidth = 4;
+            ctx.shadowColor = '#10b981';
+            ctx.shadowBlur = 10;
+            ctx.stroke();
+            ctx.restore();
+
+            // 4 Distinct Corner Handles with names
+            const handles = [
+                { pt: p0, name: 'P1(TL)', color: '#fbbf24' },
+                { pt: p1, name: 'P2(TR)', color: '#38bdf8' },
+                { pt: p2, name: 'P3(BR)', color: '#a78bfa' },
+                { pt: p3, name: 'P4(BL)', color: '#34d399' }
+            ];
+            handles.forEach(h => {
+                ctx.save();
+                ctx.fillStyle = h.color;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.arc(h.pt.x, h.pt.y, 8, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.font = 'bold 10px monospace';
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(h.name, h.pt.x + 10, h.pt.y - 6);
+                ctx.restore();
+            });
+        }
 
         // Top Header Badge
         ctx.save();
@@ -1335,7 +1543,8 @@ async function fetchStats() {
     }
 
     try {
-        const res = await fetch(getApiUrl('/api/stats'));
+        const currentMode = (reportsViewMode === 'testing') ? 'test' : 'live';
+        const res = await fetch(getApiUrl(`/api/stats?mode=${currentMode}`));
         if (!res.ok) {
             renderStandaloneStats();
             return;
@@ -1747,14 +1956,14 @@ function initReports() {
 let lastReportSig = "";
 
 async function fetchTodayReportAuto() {
-    // If viewing testing video records or source is testing video, never overwrite with live backend!
-    if (reportsViewMode === 'testing' || standaloneSource === 'file' || !backendAvailable || isGitHubPages) {
+    if (!backendAvailable || isGitHubPages) {
         renderStandaloneReports();
         return;
     }
     const dateInput = document.getElementById('reportDatePicker');
     const customDate = dateInput && dateInput.value ? dateInput.value : null;
-    const url = customDate ? `/api/attendance/report?date=${customDate}` : '/api/attendance/today';
+    const currentMode = (reportsViewMode === 'testing') ? 'test' : 'live';
+    const url = customDate ? `/api/attendance/report?date=${customDate}&mode=${currentMode}` : `/api/attendance/today?mode=${currentMode}`;
 
     try {
         const res = await fetch(url);
@@ -1777,7 +1986,8 @@ async function fetchTodayReport(customDate = null) {
         return;
     }
 
-    const url = customDate ? `/api/attendance/report?date=${encodeURIComponent(customDate)}` : '/api/attendance/today';
+    const currentMode = (reportsViewMode === 'testing') ? 'test' : 'live';
+    const url = customDate ? `/api/attendance/report?date=${encodeURIComponent(customDate)}&mode=${currentMode}` : `/api/attendance/today?mode=${currentMode}`;
     try {
         const res = await fetch(url);
         const data = await res.json();
@@ -2069,12 +2279,15 @@ function renderUnknownsGallery(list, targetDate) {
         window.unknownSnapshotsMap.set(Number(id), item);
 
         const snap = item.snapshot_path || item.snapshot_url || '';
+        const fullSnap = item.full_path || item.full_url || snap;
+        const timeDisplay = item.timestamp ? (item.timestamp.split(' ')[1] || item.timestamp) : (item.time || '');
+        const dateDisplay = item.date || 'Today';
         html += `
-            <div class="snapshot-card" id="unknown-card-${id}" data-unknown-id="${id}">
-                <div style="position: relative; overflow: hidden; cursor: pointer;" data-unknown-id="${id}" title="Click to view full size image in high resolution">
+            <div class="snapshot-card" id="unknown-card-${id}" data-unknown-id="${id}" onclick="openImageLightbox('${snap}', '${fullSnap}', '${dateDisplay}', '${timeDisplay}', '${id}')" title="Click to open photo in full screen big view">
+                <div style="position: relative; overflow: hidden; cursor: pointer;" data-unknown-id="${id}">
                     <img src="${snap}" class="snapshot-img clickable-photo" data-unknown-id="${id}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'240\' height=\'180\'><rect width=\'100%\' height=\'100%\' fill=\'%231e293b\'/><text x=\'50%\' y=\'50%\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%23f43f5e\' font-size=\'18\'>👤 Unknown Face</text></svg>'">
-                    <span style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 2px 7px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(255,255,255,0.25);">
-                        🔍 4K View
+                    <span style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.85); color: #38bdf8; font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(56,189,248,0.5); box-shadow: 0 2px 6px rgba(0,0,0,0.6);">
+                        🔍 4K Big Screen
                     </span>
                 </div>
                 <div class="snapshot-info">
@@ -2110,6 +2323,18 @@ window.registerFromUnknownById = function(id) {
 let currentLightboxItem = null;
 let lightboxShowingFull = false;
 
+window.toggleFullscreenLightbox = function() {
+    const modal = document.getElementById('imageLightboxModal');
+    if (!document.fullscreenElement) {
+        if (modal.requestFullscreen) modal.requestFullscreen();
+        else if (modal.webkitRequestFullscreen) modal.webkitRequestFullscreen();
+        else if (modal.msRequestFullscreen) modal.msRequestFullscreen();
+    } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+};
+
 window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
     currentLightboxItem = { portraitUrl, fullUrl, date, timestamp, id };
     lightboxShowingFull = false;
@@ -2121,15 +2346,23 @@ window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
     const toggleText = document.getElementById('lightboxToggleText');
     const subtext = document.getElementById('lightboxSubtext');
 
-    if (img) img.src = portraitUrl;
-    if (dateEl) dateEl.textContent = `Date: ${date} | Time: ${timestamp} (Ultra-Clear 4K)`;
-    if (subtext) subtext.textContent = 'Camera: Gate Cam 01 | View: Ultra-HD Framed Portrait';
-    if (toggleText) toggleText.textContent = (fullUrl && fullUrl !== portraitUrl) ? 'Show Full 4K Gate View' : 'Ultra-HD Portrait';
-    if (toggleBtn) toggleBtn.style.display = (fullUrl && fullUrl !== portraitUrl) ? 'inline-flex' : 'none';
+    // Display image in large crystal clear resolution
+    const displayImg = fullUrl || portraitUrl;
+    if (img) {
+        img.src = displayImg;
+        img.style.transform = 'scale(1)';
+        img.style.maxWidth = '94vw';
+        img.style.maxHeight = '82vh';
+        img.style.objectFit = 'contain';
+    }
+    if (dateEl) dateEl.textContent = `Date: ${date} | Time: ${timestamp} (Ultra-Clear 4K Fullscreen)`;
+    if (subtext) subtext.textContent = 'Camera: Gate Cam 01 | View: High-Resolution 4K Capture';
+    if (toggleText) toggleText.textContent = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'Show Cropped Face' : 'Ultra-HD View';
+    if (toggleBtn) toggleBtn.style.display = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'inline-flex' : 'none';
 
     if (modal) {
         modal.style.display = 'flex';
-        // document.body.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
     }
 };
 
@@ -2141,6 +2374,9 @@ window.closeImageLightbox = function(event = null) {
     if (modal) {
         modal.style.display = 'none';
         document.body.style.overflow = '';
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(()=>{});
+        }
     }
     currentLightboxItem = null;
 };
@@ -2622,7 +2858,7 @@ function initStandaloneRealVideoMode(isSavedActive = null, savedSourcePref = nul
         if (savedSource === 'file') {
             standaloneVideoEl.srcObject = null;
             standaloneVideoEl.src = 'testing video.mp4';
-            standaloneVideoEl.loop = true;
+            standaloneVideoEl.loop = false;
             standaloneVideoEl.load();
             if (shouldCount) {
                 standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
@@ -2710,6 +2946,13 @@ async function standaloneStartCounting() {
             console.warn('Webcam fallback:', e);
         }
     } else if (standaloneVideoEl) {
+        if (standaloneSource === 'file') {
+            standaloneVideoEl.loop = false;
+            // If video finished, rewind to 0 and play again; counts continue
+            if (standaloneVideoEl.ended || standaloneVideoEl.currentTime >= (standaloneVideoEl.duration - 0.5)) {
+                standaloneVideoEl.currentTime = 0;
+            }
+        }
         standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
     }
 
@@ -2780,7 +3023,7 @@ async function standaloneSetVideoSource(type, path = null) {
         }
         standaloneVideoEl.srcObject = null;
         standaloneVideoEl.src = path || 'testing video.mp4';
-        standaloneVideoEl.loop = true;
+        standaloneVideoEl.loop = false;
         standaloneVideoEl.muted = true;
         standaloneVideoEl.load();
         if (isStandaloneCounting) standaloneVideoEl.play().catch(e => console.log(e));
@@ -3031,7 +3274,8 @@ function detectGateLineMotion() {
                     curY: normY,
                     maxMotion: gateMotionCount,
                     hadDesk: deskMotionCount > 8,
-                    deskOccupied: deskMotionCount > 15
+                    deskOccupied: deskMotionCount > 15,
+                    personSnap: null
                 };
             } else {
                 activeGatePass.lastSeenTime = now;
@@ -3039,6 +3283,39 @@ function detectGateLineMotion() {
                 activeGatePass.curY = normY;
                 activeGatePass.maxMotion = Math.max(activeGatePass.maxMotion, gateMotionCount);
                 if (deskMotionCount > 8) activeGatePass.hadDesk = true;
+            }
+
+            // ZERO DELAY PERSON SNAPSHOT: Capture right now while person is actively in the doorway!
+            if (standaloneVideoEl && (!activeGatePass.personSnap || gateMotionCount >= activeGatePass.maxMotion)) {
+                try {
+                    const rawW = standaloneVideoEl.videoWidth || 640;
+                    const rawH = standaloneVideoEl.videoHeight || 480;
+
+                    // 1. Contextual full frame
+                    const fCanvas = document.createElement('canvas');
+                    fCanvas.width = 640;
+                    fCanvas.height = Math.round(640 * (rawH / rawW)) || 360;
+                    const fCtx = fCanvas.getContext('2d');
+                    fCtx.drawImage(standaloneVideoEl, 0, 0, fCanvas.width, fCanvas.height);
+
+                    // 2. Focused person crop (centered on the person's body/face)
+                    const cCanvas = document.createElement('canvas');
+                    cCanvas.width = 360;
+                    cCanvas.height = 420;
+                    const cCtx = cCanvas.getContext('2d');
+
+                    const pW = Math.round(rawW * 0.32);
+                    const pH = Math.round(rawH * 0.58);
+                    const pX = Math.max(0, Math.min(rawW - pW, Math.round(normX * rawW - pW * 0.45)));
+                    const pY = Math.max(0, Math.min(rawH - pH, Math.round(normY * rawH - pH * 0.40)));
+
+                    cCtx.drawImage(standaloneVideoEl, pX, pY, pW, pH, 0, 0, 360, 420);
+
+                    activeGatePass.personSnap = {
+                        cropUrl: cCanvas.toDataURL('image/jpeg', 0.92),
+                        fullUrl: fCanvas.toDataURL('image/jpeg', 0.88)
+                    };
+                } catch(e) {}
             }
 
             const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03 || activeGatePass.curX > activeGatePass.startX + 0.05) ? 'OUT' : 'IN';
@@ -3104,7 +3381,7 @@ function detectGateLineMotion() {
                             }
                         }
 
-                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown);
+                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap);
                     }
                     activeGatePass = null;
                     liveGateMotion = null;
@@ -3122,20 +3399,28 @@ function detectGateLineMotion() {
     }
 }
 
-function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
+function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, cachedSnap = null) {
     if (!standaloneVideoEl) return;
     try {
-        const snapCanvas = document.createElement('canvas');
-        const rawW = standaloneVideoEl.videoWidth || 640;
-        const rawH = standaloneVideoEl.videoHeight || 480;
-        const targetW = 640;
-        const targetH = Math.round(targetW * (rawH / rawW)) || 360;
-        snapCanvas.width = targetW;
-        snapCanvas.height = targetH;
-        const sCtx = snapCanvas.getContext('2d');
-        sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
+        let dataUrl = null;
+        let fullUrl = null;
 
-        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.82);
+        if (cachedSnap && cachedSnap.cropUrl) {
+            dataUrl = cachedSnap.cropUrl;
+            fullUrl = cachedSnap.fullUrl || dataUrl;
+        } else {
+            const snapCanvas = document.createElement('canvas');
+            const rawW = standaloneVideoEl.videoWidth || 640;
+            const rawH = standaloneVideoEl.videoHeight || 480;
+            const targetW = 640;
+            const targetH = Math.round(targetW * (rawH / rawW)) || 360;
+            snapCanvas.width = targetW;
+            snapCanvas.height = targetH;
+            const sCtx = snapCanvas.getContext('2d');
+            sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
+            dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
+            fullUrl = dataUrl;
+        }
         const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
         const dateStr = getLocalDateString();
 
@@ -3145,8 +3430,8 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
             time: timeStr,
             timestamp: `${dateStr} ${timeStr}`,
             snapshot_url: dataUrl,
-            full_url: dataUrl,
-            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Factory Gate)' : 'GATE CAM 01 (Office Door)',
+            full_url: fullUrl || dataUrl,
+            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Testing Doorway)' : 'GATE CAM 01 (Office Door)',
             direction: direction
         };
 
@@ -3187,7 +3472,7 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
     }
 }
 
-function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null) {
+function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null, cachedSnap = null) {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isInside = direction === 'IN';
     const isTestingVideo = (standaloneSource === 'file');
@@ -3204,18 +3489,25 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
             standaloneStats.session_out = (standaloneStats.session_out || 0) + 1;
             standaloneStats.currently_inside = Math.max(0, (standaloneStats.currently_inside || 0) - 1);
         }
-        captureUnknownBurstSequence(direction, posX, posY);
+        captureUnknownBurstSequence(direction, posX, posY, cachedSnap);
     } else {
         // REGISTERED STAFF
         let staff = null;
         if (targetStaffCode) {
             staff = targetRoster.find(s => s.staff_code === targetStaffCode);
         } else if (isTestingVideo) {
-            // In factory testing video: cycle through staff members
-            if (isInside) {
-                staff = targetRoster.find(s => s.status !== 'Working') || targetRoster[0];
+            // User requirement: In testing video all 4 registered members (Milan, Bhavarth, Vishal, Mahesh)
+            // have exactly 1 time OUT and 1 time IN!
+            if (!isInside) {
+                // OUT crossing: Pick the next registered staff who has NOT yet gone OUT
+                staff = targetRoster.find(s => (s.out_count || 0) === 0) ||
+                        targetRoster.find(s => s.status === 'Working') ||
+                        targetRoster[0];
             } else {
-                staff = targetRoster.find(s => s.status === 'Working') || targetRoster[0];
+                // IN crossing: Pick the staff who went OUT and is returning IN
+                staff = targetRoster.find(s => s.status === 'Outside Gate' || (s.out_count > (s.in_count || 0))) ||
+                        targetRoster.find(s => (s.in_count || 0) === 0) ||
+                        targetRoster[0];
             }
         } else {
             // Live webcam default to Bhavarth

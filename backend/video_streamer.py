@@ -128,6 +128,11 @@ class VideoStreamManager:
     def start_counting(self):
         """Starts video playback and activates live AI line-crossing counting."""
         with self.lock:
+            if self.source_type == "file" and self.cap and self.cap.isOpened():
+                pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                total = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                if total > 0 and pos >= total - 3:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self.counting_active = True
             self.is_paused = False
             self.paused_preview_frame = None
@@ -258,9 +263,15 @@ class VideoStreamManager:
                 ret, frame = self.cap.read()
                 if not ret:
                     if self.source_type == "file":
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, frame = self.cap.read()
-                    if not ret:
+                        # User requested: DO NOT auto-repeat video! Stop when finished.
+                        with self.lock:
+                            self.is_paused = True
+                            self.counting_active = False
+                            self.paused_preview_frame = self.current_frame.copy() if self.current_frame is not None else None
+                        print("[VideoStream] Testing video finished. Playback stopped without auto-repeating.")
+                        time.sleep(0.05)
+                        continue
+                    else:
                         time.sleep(0.05)
                         continue
             else:

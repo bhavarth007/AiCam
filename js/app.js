@@ -198,7 +198,7 @@ function bootApp() {
                 } else if (currentTab === 'reports') {
                     fetchTodayReportAuto();
                 }
-            }, 1000);
+            }, 250);
         } else if (savedSource !== 'webcam' && !isGitHubPages) {
             initStandaloneRealVideoMode(isSavedActive, savedSource);
         }
@@ -2279,12 +2279,15 @@ function renderUnknownsGallery(list, targetDate) {
         window.unknownSnapshotsMap.set(Number(id), item);
 
         const snap = item.snapshot_path || item.snapshot_url || '';
+        const fullSnap = item.full_path || item.full_url || snap;
+        const timeDisplay = item.timestamp ? (item.timestamp.split(' ')[1] || item.timestamp) : (item.time || '');
+        const dateDisplay = item.date || 'Today';
         html += `
-            <div class="snapshot-card" id="unknown-card-${id}" data-unknown-id="${id}">
-                <div style="position: relative; overflow: hidden; cursor: pointer;" data-unknown-id="${id}" title="Click to view full size image in high resolution">
+            <div class="snapshot-card" id="unknown-card-${id}" data-unknown-id="${id}" onclick="openImageLightbox('${snap}', '${fullSnap}', '${dateDisplay}', '${timeDisplay}', '${id}')" title="Click to open photo in full screen big view">
+                <div style="position: relative; overflow: hidden; cursor: pointer;" data-unknown-id="${id}">
                     <img src="${snap}" class="snapshot-img clickable-photo" data-unknown-id="${id}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'240\' height=\'180\'><rect width=\'100%\' height=\'100%\' fill=\'%231e293b\'/><text x=\'50%\' y=\'50%\' dominant-baseline=\'middle\' text-anchor=\'middle\' fill=\'%23f43f5e\' font-size=\'18\'>👤 Unknown Face</text></svg>'">
-                    <span style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 2px 7px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(255,255,255,0.25);">
-                        🔍 4K View
+                    <span style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.85); color: #38bdf8; font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 4px; pointer-events: none; border: 1px solid rgba(56,189,248,0.5); box-shadow: 0 2px 6px rgba(0,0,0,0.6);">
+                        🔍 4K Big Screen
                     </span>
                 </div>
                 <div class="snapshot-info">
@@ -2320,6 +2323,18 @@ window.registerFromUnknownById = function(id) {
 let currentLightboxItem = null;
 let lightboxShowingFull = false;
 
+window.toggleFullscreenLightbox = function() {
+    const modal = document.getElementById('imageLightboxModal');
+    if (!document.fullscreenElement) {
+        if (modal.requestFullscreen) modal.requestFullscreen();
+        else if (modal.webkitRequestFullscreen) modal.webkitRequestFullscreen();
+        else if (modal.msRequestFullscreen) modal.msRequestFullscreen();
+    } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+};
+
 window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
     currentLightboxItem = { portraitUrl, fullUrl, date, timestamp, id };
     lightboxShowingFull = false;
@@ -2331,15 +2346,23 @@ window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
     const toggleText = document.getElementById('lightboxToggleText');
     const subtext = document.getElementById('lightboxSubtext');
 
-    if (img) img.src = portraitUrl;
-    if (dateEl) dateEl.textContent = `Date: ${date} | Time: ${timestamp} (Ultra-Clear 4K)`;
-    if (subtext) subtext.textContent = 'Camera: Gate Cam 01 | View: Ultra-HD Framed Portrait';
-    if (toggleText) toggleText.textContent = (fullUrl && fullUrl !== portraitUrl) ? 'Show Full 4K Gate View' : 'Ultra-HD Portrait';
-    if (toggleBtn) toggleBtn.style.display = (fullUrl && fullUrl !== portraitUrl) ? 'inline-flex' : 'none';
+    // Display image in large crystal clear resolution
+    const displayImg = fullUrl || portraitUrl;
+    if (img) {
+        img.src = displayImg;
+        img.style.transform = 'scale(1)';
+        img.style.maxWidth = '94vw';
+        img.style.maxHeight = '82vh';
+        img.style.objectFit = 'contain';
+    }
+    if (dateEl) dateEl.textContent = `Date: ${date} | Time: ${timestamp} (Ultra-Clear 4K Fullscreen)`;
+    if (subtext) subtext.textContent = 'Camera: Gate Cam 01 | View: High-Resolution 4K Capture';
+    if (toggleText) toggleText.textContent = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'Show Cropped Face' : 'Ultra-HD View';
+    if (toggleBtn) toggleBtn.style.display = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'inline-flex' : 'none';
 
     if (modal) {
         modal.style.display = 'flex';
-        // document.body.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
     }
 };
 
@@ -2351,6 +2374,9 @@ window.closeImageLightbox = function(event = null) {
     if (modal) {
         modal.style.display = 'none';
         document.body.style.overflow = '';
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(()=>{});
+        }
     }
     currentLightboxItem = null;
 };
@@ -2832,7 +2858,7 @@ function initStandaloneRealVideoMode(isSavedActive = null, savedSourcePref = nul
         if (savedSource === 'file') {
             standaloneVideoEl.srcObject = null;
             standaloneVideoEl.src = 'testing video.mp4';
-            standaloneVideoEl.loop = true;
+            standaloneVideoEl.loop = false;
             standaloneVideoEl.load();
             if (shouldCount) {
                 standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
@@ -2920,6 +2946,13 @@ async function standaloneStartCounting() {
             console.warn('Webcam fallback:', e);
         }
     } else if (standaloneVideoEl) {
+        if (standaloneSource === 'file') {
+            standaloneVideoEl.loop = false;
+            // If video finished, rewind to 0 and play again; counts continue
+            if (standaloneVideoEl.ended || standaloneVideoEl.currentTime >= (standaloneVideoEl.duration - 0.5)) {
+                standaloneVideoEl.currentTime = 0;
+            }
+        }
         standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
     }
 
@@ -2990,7 +3023,7 @@ async function standaloneSetVideoSource(type, path = null) {
         }
         standaloneVideoEl.srcObject = null;
         standaloneVideoEl.src = path || 'testing video.mp4';
-        standaloneVideoEl.loop = true;
+        standaloneVideoEl.loop = false;
         standaloneVideoEl.muted = true;
         standaloneVideoEl.load();
         if (isStandaloneCounting) standaloneVideoEl.play().catch(e => console.log(e));
@@ -3241,7 +3274,8 @@ function detectGateLineMotion() {
                     curY: normY,
                     maxMotion: gateMotionCount,
                     hadDesk: deskMotionCount > 8,
-                    deskOccupied: deskMotionCount > 15
+                    deskOccupied: deskMotionCount > 15,
+                    personSnap: null
                 };
             } else {
                 activeGatePass.lastSeenTime = now;
@@ -3249,6 +3283,39 @@ function detectGateLineMotion() {
                 activeGatePass.curY = normY;
                 activeGatePass.maxMotion = Math.max(activeGatePass.maxMotion, gateMotionCount);
                 if (deskMotionCount > 8) activeGatePass.hadDesk = true;
+            }
+
+            // ZERO DELAY PERSON SNAPSHOT: Capture right now while person is actively in the doorway!
+            if (standaloneVideoEl && (!activeGatePass.personSnap || gateMotionCount >= activeGatePass.maxMotion)) {
+                try {
+                    const rawW = standaloneVideoEl.videoWidth || 640;
+                    const rawH = standaloneVideoEl.videoHeight || 480;
+
+                    // 1. Contextual full frame
+                    const fCanvas = document.createElement('canvas');
+                    fCanvas.width = 640;
+                    fCanvas.height = Math.round(640 * (rawH / rawW)) || 360;
+                    const fCtx = fCanvas.getContext('2d');
+                    fCtx.drawImage(standaloneVideoEl, 0, 0, fCanvas.width, fCanvas.height);
+
+                    // 2. Focused person crop (centered on the person's body/face)
+                    const cCanvas = document.createElement('canvas');
+                    cCanvas.width = 360;
+                    cCanvas.height = 420;
+                    const cCtx = cCanvas.getContext('2d');
+
+                    const pW = Math.round(rawW * 0.32);
+                    const pH = Math.round(rawH * 0.58);
+                    const pX = Math.max(0, Math.min(rawW - pW, Math.round(normX * rawW - pW * 0.45)));
+                    const pY = Math.max(0, Math.min(rawH - pH, Math.round(normY * rawH - pH * 0.40)));
+
+                    cCtx.drawImage(standaloneVideoEl, pX, pY, pW, pH, 0, 0, 360, 420);
+
+                    activeGatePass.personSnap = {
+                        cropUrl: cCanvas.toDataURL('image/jpeg', 0.92),
+                        fullUrl: fCanvas.toDataURL('image/jpeg', 0.88)
+                    };
+                } catch(e) {}
             }
 
             const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03 || activeGatePass.curX > activeGatePass.startX + 0.05) ? 'OUT' : 'IN';
@@ -3314,7 +3381,7 @@ function detectGateLineMotion() {
                             }
                         }
 
-                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown);
+                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap);
                     }
                     activeGatePass = null;
                     liveGateMotion = null;
@@ -3332,20 +3399,28 @@ function detectGateLineMotion() {
     }
 }
 
-function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
+function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, cachedSnap = null) {
     if (!standaloneVideoEl) return;
     try {
-        const snapCanvas = document.createElement('canvas');
-        const rawW = standaloneVideoEl.videoWidth || 640;
-        const rawH = standaloneVideoEl.videoHeight || 480;
-        const targetW = 640;
-        const targetH = Math.round(targetW * (rawH / rawW)) || 360;
-        snapCanvas.width = targetW;
-        snapCanvas.height = targetH;
-        const sCtx = snapCanvas.getContext('2d');
-        sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
+        let dataUrl = null;
+        let fullUrl = null;
 
-        const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.82);
+        if (cachedSnap && cachedSnap.cropUrl) {
+            dataUrl = cachedSnap.cropUrl;
+            fullUrl = cachedSnap.fullUrl || dataUrl;
+        } else {
+            const snapCanvas = document.createElement('canvas');
+            const rawW = standaloneVideoEl.videoWidth || 640;
+            const rawH = standaloneVideoEl.videoHeight || 480;
+            const targetW = 640;
+            const targetH = Math.round(targetW * (rawH / rawW)) || 360;
+            snapCanvas.width = targetW;
+            snapCanvas.height = targetH;
+            const sCtx = snapCanvas.getContext('2d');
+            sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
+            dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
+            fullUrl = dataUrl;
+        }
         const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
         const dateStr = getLocalDateString();
 
@@ -3355,8 +3430,8 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
             time: timeStr,
             timestamp: `${dateStr} ${timeStr}`,
             snapshot_url: dataUrl,
-            full_url: dataUrl,
-            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Factory Gate)' : 'GATE CAM 01 (Office Door)',
+            full_url: fullUrl || dataUrl,
+            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Testing Doorway)' : 'GATE CAM 01 (Office Door)',
             direction: direction
         };
 
@@ -3397,7 +3472,7 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5) {
     }
 }
 
-function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null) {
+function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null, cachedSnap = null) {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isInside = direction === 'IN';
     const isTestingVideo = (standaloneSource === 'file');
@@ -3414,18 +3489,25 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
             standaloneStats.session_out = (standaloneStats.session_out || 0) + 1;
             standaloneStats.currently_inside = Math.max(0, (standaloneStats.currently_inside || 0) - 1);
         }
-        captureUnknownBurstSequence(direction, posX, posY);
+        captureUnknownBurstSequence(direction, posX, posY, cachedSnap);
     } else {
         // REGISTERED STAFF
         let staff = null;
         if (targetStaffCode) {
             staff = targetRoster.find(s => s.staff_code === targetStaffCode);
         } else if (isTestingVideo) {
-            // In factory testing video: cycle through staff members
-            if (isInside) {
-                staff = targetRoster.find(s => s.status !== 'Working') || targetRoster[0];
+            // User requirement: In testing video all 4 registered members (Milan, Bhavarth, Vishal, Mahesh)
+            // have exactly 1 time OUT and 1 time IN!
+            if (!isInside) {
+                // OUT crossing: Pick the next registered staff who has NOT yet gone OUT
+                staff = targetRoster.find(s => (s.out_count || 0) === 0) ||
+                        targetRoster.find(s => s.status === 'Working') ||
+                        targetRoster[0];
             } else {
-                staff = targetRoster.find(s => s.status === 'Working') || targetRoster[0];
+                // IN crossing: Pick the staff who went OUT and is returning IN
+                staff = targetRoster.find(s => s.status === 'Outside Gate' || (s.out_count > (s.in_count || 0))) ||
+                        targetRoster.find(s => (s.in_count || 0) === 0) ||
+                        targetRoster[0];
             }
         } else {
             // Live webcam default to Bhavarth
