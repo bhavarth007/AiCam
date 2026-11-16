@@ -246,31 +246,64 @@
               </div>
 
               <!-- Gate Geometry & Zone Editor Panel -->
-              <div id="gateLinePanel" style="background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.3); border-radius: 10px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 330px;">
+              <div id="gateLinePanel" style="background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.35); border-radius: 10px; padding: 0.85rem 1.1rem; display: flex; flex-direction: column; gap: 0.65rem; min-width: 340px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.8rem; font-weight: 800; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">🎯 Door Borderline &amp; 4-Corner Quad</span>
-                  <div style="display: flex; gap: 4px;">
+                  <span style="font-size: 0.82rem; font-weight: 800; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.04em;">🎯 3D Doorway Quadrilateral &amp; 360° Rotation</span>
+                  <div style="display: flex; gap: 4px; flex-wrap: wrap;">
                     <button id="btnSnapTestVideoDoor" class="btn btn-primary" style="padding: 0.22rem 0.6rem; font-size: 0.72rem; font-weight: 700; background: #0284c7;" onclick="snapToTestingVideoDoor()" title="Aligns door quad perfectly with testing video doorway">🎬 Testing Video Door</button>
                     <button id="btnCenterDoor" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="snapToCenterDoor()" title="Center door square">🚪 Center Door</button>
+                    <button id="btnAngledLeftDoor" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="snapToAngledDoor(-30)" title="30° Left Perspective">📐 Left 30°</button>
+                    <button id="btnAngledRightDoor" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="snapToAngledDoor(30)" title="30° Right Perspective">📐 Right 30°</button>
                     <button id="btnFlipDir" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; color: #38bdf8;" onclick="toggleFlipDirection()" title="Flip IN vs OUT direction">🔄 Flip IN/OUT</button>
-                    <button id="btnToggleDrawMode" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; border-color: rgba(251,191,36,0.5); color: #fbbf24;" onclick="toggleGateLineDrawMode()">✏️ Drag Points</button>
+                  </div>
+                </div>
+
+                <!-- 360° Rotation Angle Slider & Quick Angle Nudge -->
+                <div style="background: rgba(0,0,0,0.4); padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 6px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem;">
+                    <span style="color: #cbd5e1; font-weight: 700;">🔄 Rotation Angle (Any Degree):</span>
+                    <span id="doorAngleDegreeText" style="font-family: monospace; font-size: 0.82rem; font-weight: 800; color: #38bdf8; background: rgba(56,189,248,0.15); padding: 1px 8px; border-radius: 4px;">0°</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <button class="btn btn-secondary" style="padding: 2px 7px; font-size: 0.70rem;" onclick="nudgeDoorAngle(-15)" title="Rotate -15°">↺ -15°</button>
+                    <input type="range" id="doorAngleSlider" min="-180" max="180" value="0" step="1" style="flex: 1; accent-color: #38bdf8; cursor: pointer;" oninput="onDoorAngleSliderChange(this.value)">
+                    <button class="btn btn-secondary" style="padding: 2px 7px; font-size: 0.70rem;" onclick="nudgeDoorAngle(15)" title="Rotate +15°">↻ +15°</button>
+                    <button class="btn btn-secondary" style="padding: 2px 7px; font-size: 0.70rem;" onclick="resetDoorAngle()" title="Reset to 0°">0°</button>
+                  </div>
+                </div>
+
+                <!-- 3D Perspective Dimension Sliders (Width & Height) -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 6px; font-size: 0.72rem;">
+                  <div>
+                    <div style="display: flex; justify-content: space-between; color: #94a3b8; margin-bottom: 2px;">
+                      <span>Door Width:</span>
+                      <span id="doorWidthText" style="font-family: monospace; color: #38bdf8;">0.32</span>
+                    </div>
+                    <input type="range" id="doorWidthSlider" min="0.08" max="0.80" step="0.01" value="0.32" style="width: 100%; accent-color: #38bdf8;" oninput="onDoorDimensionChange('width', this.value)">
+                  </div>
+                  <div>
+                    <div style="display: flex; justify-content: space-between; color: #94a3b8; margin-bottom: 2px;">
+                      <span>Door Height:</span>
+                      <span id="doorHeightText" style="font-family: monospace; color: #38bdf8;">0.42</span>
+                    </div>
+                    <input type="range" id="doorHeightSlider" min="0.08" max="0.85" step="0.01" value="0.42" style="width: 100%; accent-color: #38bdf8;" oninput="onDoorDimensionChange('height', this.value)">
                   </div>
                 </div>
 
                 <!-- 4 Editable Corners Display -->
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 0.72rem; font-family: monospace; background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px;">
-                  <div><span style="color: #fbbf24; font-weight: 700;">● P1 (TL):</span> <span id="polyP1" style="color: #e2e8f0;">0.170, 0.150</span></div>
-                  <div><span style="color: #38bdf8; font-weight: 700;">● P2 (TR):</span> <span id="polyP2" style="color: #e2e8f0;">0.410, 0.150</span></div>
-                  <div><span style="color: #34d399; font-weight: 700;">● P4 (BL):</span> <span id="polyP4" style="color: #e2e8f0;">0.160, 0.940</span></div>
-                  <div><span style="color: #a78bfa; font-weight: 700;">● P3 (BR):</span> <span id="polyP3" style="color: #e2e8f0;">0.430, 0.940</span></div>
+                  <div><span style="color: #fbbf24; font-weight: 700;">● P1 (TL Header):</span> <span id="polyP1" style="color: #e2e8f0;">0.120, 0.100</span></div>
+                  <div><span style="color: #38bdf8; font-weight: 700;">● P2 (TR Header):</span> <span id="polyP2" style="color: #e2e8f0;">0.440, 0.100</span></div>
+                  <div><span style="color: #34d399; font-weight: 700;">● P4 (BL Floor):</span> <span id="polyP4" style="color: #e2e8f0;">0.120, 0.520</span></div>
+                  <div><span style="color: #a78bfa; font-weight: 700;">● P3 (BR Floor):</span> <span id="polyP3" style="color: #e2e8f0;">0.440, 0.520</span></div>
                 </div>
 
-                <!-- Borderline Crossing Note -->
-                <div style="font-size: 0.70rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; background: rgba(16,185,129,0.08); border: 1px dashed rgba(16,185,129,0.35); padding: 4px 8px; border-radius: 5px;">
-                  <span style="color: #34d399; font-weight: 700;">🟢 Active Threshold Borderline: P4 ──▶ P3</span>
-                  <span style="color: #cbd5e1; font-family: monospace;">Drag ANY corner handle on video to adjust dimension</span>
+                <!-- 3D Direction & Threshold Indicator Note -->
+                <div style="font-size: 0.70rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; background: rgba(16,185,129,0.08); border: 1px dashed rgba(16,185,129,0.35); padding: 5px 9px; border-radius: 5px;">
+                  <span id="thresholdStatusNote" style="color: #34d399; font-weight: 700;">🟢 3D Entrance Threshold: P4 ──▶ P3 [Crossing = IN]</span>
+                  <span style="color: #cbd5e1; font-family: monospace;">Drag ↻ handle or corners to rotate &amp; fit door</span>
                 </div>
-              </div>
+              </div></div>
 
             </div>
           </div>

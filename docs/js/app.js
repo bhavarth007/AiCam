@@ -375,6 +375,153 @@ async function loadDoorPolygonFromServer() {
     } catch(e) {}
 }
 
+let dragStartAngle = 0;
+let dragInitialPoly = null;
+let sendDoorPolygonTimeout = null;
+
+function getDoorCenter() {
+    if (!gatePolygon || gatePolygon.length !== 4) return { cx: 0.28, cy: 0.31 };
+    const cx = (gatePolygon[0].x + gatePolygon[1].x + gatePolygon[2].x + gatePolygon[3].x) / 4.0;
+    const cy = (gatePolygon[0].y + gatePolygon[1].y + gatePolygon[2].y + gatePolygon[3].y) / 4.0;
+    return { cx, cy };
+}
+
+function getDoorAngleDeg() {
+    if (!gatePolygon || gatePolygon.length < 2) return 0;
+    const dx = gatePolygon[1].x - gatePolygon[0].x;
+    const dy = gatePolygon[1].y - gatePolygon[0].y;
+    return Math.round(Math.atan2(dy, dx) * 180 / Math.PI);
+}
+
+function getDoorRotationHandlePos() {
+    if (!gatePolygon || gatePolygon.length !== 4) return { hx: 0.28, hy: 0.04, mx: 0.28, my: 0.10 };
+    const p1 = gatePolygon[0], p2 = gatePolygon[1];
+    const mx = (p1.x + p2.x) / 2.0;
+    const my = (p1.y + p2.y) / 2.0;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 0.001;
+    // Normal pointing outward/upward from door top lintel
+    const nx = dy / len;
+    const ny = -dx / len;
+    const stemDist = 0.075;
+    return {
+        hx: mx + nx * stemDist,
+        hy: my + ny * stemDist,
+        mx,
+        my
+    };
+}
+
+function throttledSendDoorPolygonToServer() {
+    if (sendDoorPolygonTimeout) return;
+    sendDoorPolygonTimeout = setTimeout(() => {
+        sendDoorPolygonTimeout = null;
+        sendDoorPolygonToServer();
+    }, 60);
+}
+
+function rotateDoorByDeltaAngle(deltaRad) {
+    const { cx, cy } = getDoorCenter();
+    const cos = Math.cos(deltaRad);
+    const sin = Math.sin(deltaRad);
+    gatePolygon = gatePolygon.map(pt => {
+        const rx = pt.x - cx;
+        const ry = pt.y - cy;
+        return {
+            x: Math.max(0.005, Math.min(0.995, cx + rx * cos - ry * sin)),
+            y: Math.max(0.005, Math.min(0.995, cy + rx * sin + ry * cos))
+        };
+    });
+    window.gatePolygon = gatePolygon;
+    saveGatePolygonToStorage();
+    throttledSendDoorPolygonToServer();
+    updatePolygonUI();
+    drawLineOnCanvas();
+}
+
+window.rotateDoorToAngle = function(targetDeg) {
+    const currentDeg = getDoorAngleDeg();
+    const deltaRad = (targetDeg - currentDeg) * Math.PI / 180;
+    rotateDoorByDeltaAngle(deltaRad);
+};
+
+window.onDoorAngleSliderChange = function(val) {
+    window.rotateDoorToAngle(parseFloat(val));
+};
+
+window.nudgeDoorAngle = function(degDelta) {
+    rotateDoorByDeltaAngle(degDelta * Math.PI / 180);
+};
+
+window.resetDoorAngle = function() {
+    window.rotateDoorToAngle(0);
+};
+
+window.onDoorDimensionChange = function(dimension, newVal) {
+    newVal = parseFloat(newVal);
+    if (isNaN(newVal) || newVal <= 0.02) return;
+    const { cx, cy } = getDoorCenter();
+    const p1 = gatePolygon[0], p2 = gatePolygon[1], p3 = gatePolygon[2], p4 = gatePolygon[3];
+    const topDx = p2.x - p1.x, topDy = p2.y - p1.y;
+    const curW = Math.hypot(topDx, topDy) || 0.01;
+    const sideDx = p4.x - p1.x, sideDy = p4.y - p1.y;
+    const curH = Math.hypot(sideDx, sideDy) || 0.01;
+
+    const scaleW = dimension === 'width' ? (newVal / curW) : 1.0;
+    const scaleH = dimension === 'height' ? (newVal / curH) : 1.0;
+
+    const angle = Math.atan2(topDy, topDx);
+    const cos = Math.cos(-angle);
+    const sin = Math.sin(-angle);
+    const cosR = Math.cos(angle);
+    const sinR = Math.sin(angle);
+
+    gatePolygon = gatePolygon.map(pt => {
+        const rx = pt.x - cx;
+        const ry = pt.y - cy;
+        let lx = rx * cos - ry * sin;
+        let ly = rx * sin + ry * cos;
+        lx *= scaleW;
+        ly *= scaleH;
+        return {
+            x: Math.max(0.005, Math.min(0.995, cx + lx * cosR - ly * sinR)),
+            y: Math.max(0.005, Math.min(0.995, cy + lx * sinR + ly * cosR))
+        };
+    });
+    window.gatePolygon = gatePolygon;
+    saveGatePolygonToStorage();
+    throttledSendDoorPolygonToServer();
+    updatePolygonUI();
+    drawLineOnCanvas();
+};
+
+window.snapToAngledDoor = function(angleDeg) {
+    const cx = 0.28, cy = 0.31;
+    const halfW = 0.16, halfH = 0.21;
+    const rad = (angleDeg || 0) * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const basePts = [
+        { x: -halfW, y: -halfH }, // P1: TL
+        { x:  halfW, y: -halfH }, // P2: TR
+        { x:  halfW, y:  halfH }, // P3: BR
+        { x: -halfW, y:  halfH }  // P4: BL
+    ];
+
+    gatePolygon = basePts.map(pt => ({
+        x: Math.max(0.005, Math.min(0.995, cx + pt.x * cos - pt.y * sin)),
+        y: Math.max(0.005, Math.min(0.995, cy + pt.x * sin + pt.y * cos))
+    }));
+    window.gatePolygon = gatePolygon;
+    saveGatePolygonToStorage();
+    sendDoorPolygonToServer();
+    updatePolygonUI();
+    drawLineOnCanvas();
+    showNotification(`📐 Door quad oriented to ${angleDeg}° perspective!`, 'info');
+};
+
 function updatePolygonUI() {
     const el1 = document.getElementById('polyP1');
     const el2 = document.getElementById('polyP2');
@@ -384,6 +531,38 @@ function updatePolygonUI() {
     if (el2 && gatePolygon[1]) el2.textContent = `${gatePolygon[1].x.toFixed(3)}, ${gatePolygon[1].y.toFixed(3)}`;
     if (el3 && gatePolygon[2]) el3.textContent = `${gatePolygon[2].x.toFixed(3)}, ${gatePolygon[2].y.toFixed(3)}`;
     if (el4 && gatePolygon[3]) el4.textContent = `${gatePolygon[3].x.toFixed(3)}, ${gatePolygon[3].y.toFixed(3)}`;
+
+    const deg = getDoorAngleDeg();
+    const degEl = document.getElementById('doorAngleDegreeText');
+    const sliderEl = document.getElementById('doorAngleSlider');
+    if (degEl) degEl.textContent = `${deg >= 0 ? '+' : ''}${deg}°`;
+    if (sliderEl && document.activeElement !== sliderEl) sliderEl.value = deg;
+
+    if (gatePolygon && gatePolygon.length === 4) {
+        const topDx = gatePolygon[1].x - gatePolygon[0].x;
+        const topDy = gatePolygon[1].y - gatePolygon[0].y;
+        const curW = Math.hypot(topDx, topDy);
+        const sideDx = gatePolygon[3].x - gatePolygon[0].x;
+        const sideDy = gatePolygon[3].y - gatePolygon[0].y;
+        const curH = Math.hypot(sideDx, sideDy);
+
+        const wText = document.getElementById('doorWidthText');
+        const wSlider = document.getElementById('doorWidthSlider');
+        if (wText) wText.textContent = curW.toFixed(2);
+        if (wSlider && document.activeElement !== wSlider) wSlider.value = curW.toFixed(2);
+
+        const hText = document.getElementById('doorHeightText');
+        const hSlider = document.getElementById('doorHeightSlider');
+        if (hText) hText.textContent = curH.toFixed(2);
+        if (hSlider && document.activeElement !== hSlider) hSlider.value = curH.toFixed(2);
+    }
+
+    const noteEl = document.getElementById('thresholdStatusNote');
+    if (noteEl) {
+        noteEl.innerHTML = flipGateDirection ?
+            '🟢 <b>3D Threshold (P4─▶P3):</b> Crossing = <span style="color:#f59e0b">OUT (Flipped)</span>' :
+            '🟢 <b>3D Threshold (P4─▶P3):</b> Crossing = <span style="color:#34d399">IN</span>';
+    }
 }
 
 window.snapToTestingVideoDoor = function() {
@@ -630,14 +809,22 @@ function canvasPxToNorm(canvas, px, py) {
 // Hit test: detects handles or body for Box Mode vs Line Mode
 function hitTest(nx, ny) {
     const r = HANDLE_RADIUS_NORM * 1.8;
-    // Check 4 polygon corners first
+    // 1. Check 360° Rotation Handle
+    if (gatePolygon && gatePolygon.length === 4) {
+        const hPos = getDoorRotationHandlePos();
+        if (Math.hypot(nx - hPos.hx, ny - hPos.hy) < 0.040) {
+            return 'rotate_handle';
+        }
+    }
+
+    // 2. Check 4 polygon corners
     if (gatePolygon && gatePolygon.length === 4) {
         for (let i = 0; i < 4; i++) {
             if (Math.hypot(nx - gatePolygon[i].x, ny - gatePolygon[i].y) < r) {
                 return `corner_${i}`;
             }
         }
-        // Threshold borderline (P4 -> P3)
+        // 3. Threshold borderline (P4 -> P3)
         const p4 = gatePolygon[3], p3 = gatePolygon[2];
         const dx = p3.x - p4.x, dy = p3.y - p4.y;
         const len2 = dx * dx + dy * dy;
@@ -646,7 +833,7 @@ function hitTest(nx, ny) {
             const projX = p4.x + t * dx, projY = p4.y + t * dy;
             if (Math.hypot(nx - projX, ny - projY) < r) return 'threshold_line';
         }
-        // Check inside quad
+        // 4. Check inside quad
         const xs = gatePolygon.map(p => p.x);
         const ys = gatePolygon.map(p => p.y);
         if (nx >= Math.min(...xs) && nx <= Math.max(...xs) && ny >= Math.min(...ys) && ny <= Math.max(...ys)) {
@@ -679,7 +866,16 @@ function onCanvasMouseDown(e) {
     const hit = hitTest(nx, ny);
     if (hit) {
         dragTarget = hit;
-        if (gateGeometry === 'box') {
+        if (hit === 'rotate_handle') {
+            const { cx, cy } = getDoorCenter();
+            dragStartAngle = Math.atan2(ny - cy, nx - cx);
+            dragInitialPoly = gatePolygon.map(p => ({ ...p }));
+            dragStartX = nx;
+            dragStartY = ny;
+        } else if (hit.startsWith('corner_') || hit === 'inside_poly' || hit === 'threshold_line') {
+            dragStartX = nx;
+            dragStartY = ny;
+        } else if (gateGeometry === 'box') {
             dragStartX = nx;
             dragStartY = ny;
         } else {
@@ -720,8 +916,14 @@ function onCanvasMouseMove(e) {
 
     if (!isDragging) {
         const hit = hitTest(nx, ny);
-        if (hit && hit.startsWith('corner_')) {
-            canvas.style.cursor = 'nwse-resize';
+        if (hit === 'rotate_handle') {
+            canvas.style.cursor = 'grab';
+        } else if (hit && hit.startsWith('corner_')) {
+            canvas.style.cursor = 'pointer';
+        } else if (hit === 'threshold_line') {
+            canvas.style.cursor = 'ns-resize';
+        } else if (hit === 'inside_poly') {
+            canvas.style.cursor = 'move';
         } else if (hit === 'p1' || hit === 'p2') {
             canvas.style.cursor = 'grab';
         } else if (hit === 'box' || hit === 'line') {
@@ -729,6 +931,28 @@ function onCanvasMouseMove(e) {
         } else {
             canvas.style.cursor = drawModeActive ? 'crosshair' : 'default';
         }
+        return;
+    }
+
+    if (dragTarget === 'rotate_handle') {
+        const { cx, cy } = getDoorCenter();
+        const curAngle = Math.atan2(ny - cy, nx - cx);
+        const dTheta = curAngle - dragStartAngle;
+        const cos = Math.cos(dTheta);
+        const sin = Math.sin(dTheta);
+        gatePolygon = dragInitialPoly.map(p => {
+            const rx = p.x - cx;
+            const ry = p.y - cy;
+            return {
+                x: Math.max(0.005, Math.min(0.995, cx + rx * cos - ry * sin)),
+                y: Math.max(0.005, Math.min(0.995, cy + rx * sin + ry * cos))
+            };
+        });
+        window.gatePolygon = gatePolygon;
+        updatePolygonUI();
+        saveGatePolygonToStorage();
+        throttledSendDoorPolygonToServer();
+        drawLineOnCanvas();
         return;
     }
 
@@ -827,92 +1051,218 @@ function drawLineOnCanvas() {
     const lineColor = isActive ? '#00ffff' : '#fbbf24';
     const glowColor = isActive ? 'rgba(0,255,255,0.3)' : 'rgba(251,191,36,0.3)';
 
-    // ─── BOX GEOMETRY RENDERING (Doorway Gate Zone) ───
+    // ─── 3D PERSPECTIVE DOORWAY GATE ZONE RENDERING ───
     if (gateGeometry === 'box') {
-        const bx = gateBox.x * W;
-        const by = gateBox.y * H;
-        const bw = gateBox.w * W;
-        const bh = gateBox.h * H;
-
-        // Semi-transparent interior fill
-        ctx.save();
-        ctx.fillStyle = isActive ? 'rgba(6, 182, 212, 0.10)' : 'rgba(251, 191, 36, 0.08)';
-        ctx.fillRect(bx, by, bw, bh);
-
-        // Dashed glowing border
-        ctx.strokeStyle = lineColor;
-        ctx.lineWidth = 2.5;
-        ctx.setLineDash([8, 4]);
-        ctx.shadowColor = lineColor;
-        ctx.shadowBlur = 10;
-        ctx.strokeRect(bx, by, bw, bh);
-        ctx.restore();
-
-        // High-tech corner brackets
-        const cornerL = Math.min(22, bw * 0.25, bh * 0.25);
-        ctx.save();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 3.5;
-        ctx.shadowColor = lineColor;
-        ctx.shadowBlur = 8;
-        // TL
-        ctx.beginPath();
-        ctx.moveTo(bx, by + cornerL); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerL, by);
-        // TR
-        ctx.moveTo(bx + bw - cornerL, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerL);
-        // BL
-        ctx.moveTo(bx, by + bh - cornerL); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cornerL, by + bh);
-        // BR
-        ctx.moveTo(bx + bw - cornerL, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cornerL);
-        ctx.stroke();
-        ctx.restore();
-
-        // Render 4-Point Door Polygon if available
+        // Render 4-Point 3D Door Quadrilateral
         if (gatePolygon && gatePolygon.length === 4) {
-            const p0 = { x: gatePolygon[0].x * W, y: gatePolygon[0].y * H };
-            const p1 = { x: gatePolygon[1].x * W, y: gatePolygon[1].y * H };
-            const p2 = { x: gatePolygon[2].x * W, y: gatePolygon[2].y * H };
-            const p3 = { x: gatePolygon[3].x * W, y: gatePolygon[3].y * H };
+            const p1 = { x: gatePolygon[0].x * W, y: gatePolygon[0].y * H };
+            const p2 = { x: gatePolygon[1].x * W, y: gatePolygon[1].y * H };
+            const p3 = { x: gatePolygon[2].x * W, y: gatePolygon[2].y * H };
+            const p4 = { x: gatePolygon[3].x * W, y: gatePolygon[3].y * H };
 
-            // Polygon translucent fill
+            const { cx, cy } = getDoorCenter();
+            const centerPx = { x: cx * W, y: cy * H };
+            const curDeg = getDoorAngleDeg();
+
+            // 1. Shaded Door Interior Translucent Fill
             ctx.save();
             ctx.beginPath();
-            ctx.moveTo(p0.x, p0.y);
-            ctx.lineTo(p1.x, p1.y);
+            ctx.moveTo(p1.x, p1.y);
             ctx.lineTo(p2.x, p2.y);
             ctx.lineTo(p3.x, p3.y);
+            ctx.lineTo(p4.x, p4.y);
             ctx.closePath();
             ctx.fillStyle = isActive ? 'rgba(6, 182, 212, 0.12)' : 'rgba(251, 191, 36, 0.08)';
             ctx.fill();
             ctx.strokeStyle = lineColor;
             ctx.lineWidth = 2;
+            ctx.setLineDash([6, 3]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+
+            // 2. 3D Door Frame Jambs (Left P1->P4, Right P2->P3, Top Header P1->P2)
+            ctx.save();
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2.5;
+            // Top Lintel Header
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+            // Left Door Jamb
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p4.x, p4.y);
+            ctx.stroke();
+            // Right Door Jamb
+            ctx.beginPath();
+            ctx.moveTo(p2.x, p2.y);
+            ctx.lineTo(p3.x, p3.y);
             ctx.stroke();
             ctx.restore();
 
-            // Threshold Borderline (P4 to P3)
+            // 3. 360° Rotation Stem & Handle (Midpoint of P1->P2 extending outward)
+            const hPos = getDoorRotationHandlePos();
+            const hxPx = hPos.hx * W;
+            const hyPx = hPos.hy * H;
+            const mxPx = hPos.mx * W;
+            const myPx = hPos.my * H;
+
             ctx.save();
+            // Stem line
             ctx.beginPath();
-            ctx.moveTo(p3.x, p3.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = '#10b981';
-            ctx.lineWidth = 4;
-            ctx.shadowColor = '#10b981';
+            ctx.moveTo(mxPx, myPx);
+            ctx.lineTo(hxPx, hyPx);
+            ctx.strokeStyle = '#22d3ee';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 2]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Rotation Handle Knob
+            ctx.beginPath();
+            ctx.arc(hxPx, hyPx, 14, 0, Math.PI * 2);
+            ctx.fillStyle = '#0f172a';
+            ctx.fill();
+            ctx.strokeStyle = '#22d3ee';
+            ctx.lineWidth = 2.5;
+            ctx.shadowColor = '#06b6d4';
             ctx.shadowBlur = 10;
             ctx.stroke();
+
+            // Inner Rotation Icon
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = 'bold 13px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('↻', hxPx, hyPx);
+
+            // Small 360° badge
+            ctx.font = 'bold 9px monospace';
+            ctx.fillStyle = '#22d3ee';
+            ctx.fillText('360°', hxPx, hyPx - 20);
             ctx.restore();
 
-            // 4 Distinct Corner Handles with names
-            const handles = [
-                { pt: p0, name: 'P1(TL)', color: '#fbbf24' },
-                { pt: p1, name: 'P2(TR)', color: '#38bdf8' },
-                { pt: p2, name: 'P3(BR)', color: '#a78bfa' },
-                { pt: p3, name: 'P4(BL)', color: '#34d399' }
+            // 4. 3D Threshold Floor Carpet & Direction
+            // Threshold: P4 -> P3
+            const tDx = gatePolygon[2].x - gatePolygon[3].x;
+            const tDy = gatePolygon[2].y - gatePolygon[3].y;
+            const tLen = Math.hypot(tDx, tDy) || 0.001;
+
+            // IN unit vector perpendicular to P4->P3
+            let inVx = -tDy / tLen;
+            let inVy =  tDx / tLen;
+            if (flipGateDirection) {
+                inVx = -inVx;
+                inVy = -inVy;
+            }
+
+            // 3D Carpet Polygon extending into the room by 0.08
+            const carpetDepth = 0.085;
+            const c4 = { x: (gatePolygon[3].x + inVx * carpetDepth) * W, y: (gatePolygon[3].y + inVy * carpetDepth) * H };
+            const c3 = { x: (gatePolygon[2].x + inVx * carpetDepth) * W, y: (gatePolygon[2].y + inVy * carpetDepth) * H };
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(p4.x, p4.y);
+            ctx.lineTo(p3.x, p3.y);
+            ctx.lineTo(c3.x, c3.y);
+            ctx.lineTo(c4.x, c4.y);
+            ctx.closePath();
+            const carpetGrad = ctx.createLinearGradient(
+                (p4.x + p3.x) / 2, (p4.y + p3.y) / 2,
+                (c4.x + c3.x) / 2, (c4.y + c3.y) / 2
+            );
+            carpetGrad.addColorStop(0, 'rgba(16, 185, 129, 0.32)');
+            carpetGrad.addColorStop(1, 'rgba(16, 185, 129, 0.04)');
+            ctx.fillStyle = carpetGrad;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(16, 185, 129, 0.5)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+
+            // 5. High-Intensity Glowing Emerald Threshold Border (P4 -> P3)
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(p4.x, p4.y);
+            ctx.lineTo(p3.x, p3.y);
+            ctx.strokeStyle = '#10b981';
+            ctx.lineWidth = 4.5;
+            ctx.shadowColor = '#10b981';
+            ctx.shadowBlur = 14;
+            ctx.stroke();
+            ctx.restore();
+
+            // 6. Direction Labels & 3D Arrows (IN vs OUT)
+            const midFloorX = (p4.x + p3.x) / 2;
+            const midFloorY = (p4.y + p3.y) / 2;
+            const inLabelX  = midFloorX + inVx * 0.055 * W;
+            const inLabelY  = midFloorY + inVy * 0.055 * H;
+            const outLabelX = midFloorX - inVx * 0.055 * W;
+            const outLabelY = midFloorY - inVy * 0.055 * H;
+
+            ctx.save();
+            ctx.font = 'bold 11px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // IN Label badge
+            const inText = '🟢 IN ⬇ (Room Interior)';
+            const inW = ctx.measureText(inText).width + 12;
+            ctx.fillStyle = 'rgba(6, 78, 59, 0.88)';
+            ctx.strokeStyle = '#10b981';
+            ctx.lineWidth = 1;
+            ctx.fillRect(inLabelX - inW/2, inLabelY - 10, inW, 20);
+            ctx.strokeRect(inLabelX - inW/2, inLabelY - 10, inW, 20);
+            ctx.fillStyle = '#34d399';
+            ctx.fillText(inText, inLabelX, inLabelY);
+
+            // OUT Label badge
+            const outText = '🚪 OUT ⬆ (Corridor)';
+            const outW = ctx.measureText(outText).width + 12;
+            ctx.fillStyle = 'rgba(30, 41, 59, 0.88)';
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 1;
+            ctx.fillRect(outLabelX - outW/2, outLabelY - 10, outW, 20);
+            ctx.strokeRect(outLabelX - outW/2, outLabelY - 10, outW, 20);
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(outText, outLabelX, outLabelY);
+            ctx.restore();
+
+            // 7. Center Door Angle & Status Badge
+            ctx.save();
+            ctx.font = 'bold 10px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const centerTag = `📐 ${curDeg >= 0 ? '+' : ''}${curDeg}° | 3D DOOR`;
+            const cW = ctx.measureText(centerTag).width + 12;
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.strokeStyle = '#06b6d4';
+            ctx.lineWidth = 1;
+            ctx.fillRect(centerPx.x - cW/2, centerPx.y - 9, cW, 18);
+            ctx.strokeRect(centerPx.x - cW/2, centerPx.y - 9, cW, 18);
+            ctx.fillStyle = '#22d3ee';
+            ctx.fillText(centerTag, centerPx.x, centerPx.y);
+            ctx.restore();
+
+            // 8. 4 Draggable Corner Pins
+            const corners = [
+                { pt: p1, name: 'P1(TL)', color: '#fbbf24' },
+                { pt: p2, name: 'P2(TR)', color: '#38bdf8' },
+                { pt: p3, name: 'P3(BR)', color: '#a78bfa' },
+                { pt: p4, name: 'P4(BL)', color: '#34d399' }
             ];
-            handles.forEach(h => {
+            corners.forEach(h => {
                 ctx.save();
                 ctx.fillStyle = h.color;
                 ctx.strokeStyle = '#ffffff';
                 ctx.lineWidth = 2.5;
+                ctx.shadowColor = h.color;
+                ctx.shadowBlur = 8;
                 ctx.beginPath();
                 ctx.arc(h.pt.x, h.pt.y, 8, 0, Math.PI * 2);
                 ctx.fill();
@@ -920,36 +1270,12 @@ function drawLineOnCanvas() {
 
                 ctx.font = 'bold 10px monospace';
                 ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'left';
+                ctx.shadowBlur = 4;
                 ctx.fillText(h.name, h.pt.x + 10, h.pt.y - 6);
                 ctx.restore();
             });
         }
-
-        // Top Header Badge
-        ctx.save();
-        ctx.font = 'bold 11px Inter, sans-serif';
-        const tagText = '🚪 OFFICE DOORWAY GATE ZONE';
-        const tagW = ctx.measureText(tagText).width + 16;
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-        ctx.strokeStyle = lineColor;
-        ctx.lineWidth = 1;
-        ctx.fillRect(bx + bw/2 - tagW/2, by - 22, tagW, 20);
-        ctx.strokeRect(bx + bw/2 - tagW/2, by - 22, tagW, 20);
-        ctx.fillStyle = lineColor;
-        ctx.textAlign = 'center';
-        ctx.fillText(tagText, bx + bw/2, by - 8);
-        ctx.restore();
-
-        // Depth direction indicators (OUTSIDE through door, INSIDE to desk)
-        ctx.save();
-        ctx.font = 'bold 11px Inter, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#38bdf8';
-        ctx.fillText('⬆ OUTSIDE (DOOR)', bx + bw/2, Math.max(16, by + 18));
-        ctx.fillStyle = '#34d399';
-        ctx.fillText('⬇ INSIDE (OFFICE)', bx + bw/2, by + bh - 8);
-        ctx.restore();
-
         if (isDragging) updateBoxSliders();
         // Real-time Motion Reticle in Gate Zone
         if (liveGateMotion && liveGateMotion.active) {
