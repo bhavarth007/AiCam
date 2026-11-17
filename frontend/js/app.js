@@ -3306,14 +3306,16 @@ function standaloneResetCounts() {
     standaloneStats.session_in = 0;
     standaloneStats.session_out = 0;
     standaloneStats.session_unknown = 0;
-    REAL_STAFF_ROSTER.forEach((s, i) => {
-        s.in_count = 0;
-        s.out_count = 0;
-        s.in_time = null;
-        s.out_time = null;
-        s.live_hours = 0.0;
-        s.status = 'Not Checked In';
-        s.hours_outside = 0;
+    [LIVE_STAFF_ROSTER, TEST_STAFF_ROSTER].forEach(roster => {
+        roster.forEach(s => {
+            s.in_count = 0;
+            s.out_count = 0;
+            s.in_time = null;
+            s.out_time = null;
+            s.live_hours = 0.0;
+            s.status = 'Not Checked In';
+            s.hours_outside = 0;
+        });
     });
     standaloneStats.currently_inside = 0;
     standaloneStats.present_today = 0;
@@ -3693,10 +3695,15 @@ function detectGateLineMotion() {
                         } else {
                             // AUTO Mode:
                             if (standaloneSource === 'file') {
-                                // In testing video: real person crossed
-                                testVideoCrossingRotation++;
-                                // Only every 4th real person crossing is an unknown visitor
-                                isUnknown = (testVideoCrossingRotation % 4 === 0);
+                                // In testing video: Ensure all 4 registered staff (Milan, Bhavarth, Vishal, Mahesh)
+                                // have 1 time OUT and 1 time IN before any unknown is counted
+                                if (dir === 'OUT') {
+                                    const needsOut = targetRoster.some(s => (s.out_count || 0) === 0);
+                                    isUnknown = !needsOut;
+                                } else {
+                                    const needsIn = targetRoster.some(s => s.status === 'Outside Gate' || (s.in_count || 0) === 0);
+                                    isUnknown = !needsIn;
+                                }
                             } else {
                                 // Live Webcam
                                 if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {

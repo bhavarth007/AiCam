@@ -160,12 +160,7 @@ class VideoStreamManager:
     def reset_counts(self):
         """Resets session counters to 0 and rewinds video if file source."""
         with self.lock:
-            self.tracking_engine.count_in = 0
-            self.tracking_engine.count_out = 0
-            self.tracking_engine.count_unknown = 0
-            self.tracking_engine.track_side.clear()
-            self.tracking_engine.track_history.clear()
-            self.tracking_engine.cooldown_locks.clear()
+            self.tracking_engine.reset_counts()
             self.tracking_engine.recent_events.clear()
             self.paused_preview_frame = None
 
