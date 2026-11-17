@@ -203,7 +203,7 @@ function bootApp() {
                 } else if (currentTab === 'reports') {
                     fetchTodayReportAuto();
                 }
-            }, 250);
+            }, 2000);
         } else if (savedSource !== 'webcam' && !isGitHubPages) {
             initStandaloneRealVideoMode(isSavedActive, savedSource);
         }
@@ -286,6 +286,11 @@ function initTabs() {
 
 function switchTab(tabId) {
     currentTab = tabId;
+    // Ensure body scroll is unlocked whenever switching menus
+    document.body.style.overflow = '';
+    document.body.style.overflowY = 'auto';
+    if (typeof closeImageLightbox === 'function') closeImageLightbox();
+
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
     });
@@ -299,7 +304,7 @@ function switchTab(tabId) {
     } else if (tabId === 'reports') {
         fetchTodayReport();
     } else if (tabId === 'unknowns') {
-        loadUnknowns();
+        loadUnknowns(null, true);
     } else if (tabId === 'module2') {
         loadModule2Records();
     } else if (tabId === 'module3') {
@@ -2606,10 +2611,16 @@ window.filterUnknownsByDate = function() {
 let lastUnknownsSig = "";
 
 async function loadUnknownsAuto() {
+    if (currentTab !== 'unknowns') return;
     const datePicker = document.getElementById('unknownDatePicker');
     const targetDate = datePicker && datePicker.value ? datePicker.value.trim() : null;
-    const url = targetDate ? `/api/unknowns?date=${encodeURIComponent(targetDate)}` : '/api/unknowns';
 
+    if (isGitHubPages || !backendAvailable) {
+        renderStandaloneUnknowns(targetDate);
+        return;
+    }
+
+    const url = targetDate ? getApiUrl(`/api/unknowns?date=${encodeURIComponent(targetDate)}`) : getApiUrl('/api/unknowns');
     try {
         const res = await fetch(url);
         const list = await res.json();
@@ -2618,7 +2629,9 @@ async function loadUnknownsAuto() {
             lastUnknownsSig = sig;
             renderUnknownsGallery(list, targetDate);
         }
-    } catch (e) {}
+    } catch (e) {
+        renderStandaloneUnknowns(targetDate);
+    }
 }
 
 async function loadUnknowns(filterDate = null, force = false) {
@@ -2647,9 +2660,17 @@ async function loadUnknowns(filterDate = null, force = false) {
 
 window.unknownSnapshotsMap = window.unknownSnapshotsMap || new Map();
 
-function renderUnknownsGallery(list, targetDate) {
+let lastRenderedGallerySig = "";
+
+function renderUnknownsGallery(list, targetDate, force = false) {
     const container = document.getElementById('unknownsGallery');
     if (!container) return;
+
+    const sig = (list || []).map(item => `${item.id}-${item.timestamp}`).join('|');
+    if (!force && sig === lastRenderedGallerySig) {
+        return; // Identical gallery contents, keep DOM untouched for smooth uninterrupted scrolling!
+    }
+    lastRenderedGallerySig = sig;
 
     if (!list || list.length === 0) {
         container.innerHTML = `
@@ -2769,13 +2790,26 @@ window.closeImageLightbox = function(event = null) {
     const modal = document.getElementById('imageLightboxModal');
     if (modal) {
         modal.style.display = 'none';
-        document.body.style.overflow = '';
-        if (document.fullscreenElement) {
-            document.exitFullscreen().catch(()=>{});
-        }
+    }
+    // Always unlock body scroll
+    document.body.style.overflow = '';
+    document.body.style.overflowY = 'auto';
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(()=>{});
     }
     currentLightboxItem = null;
 };
+
+// Global Escape Key to close modal and unlock scroll
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        window.closeImageLightbox();
+        if (typeof closeHikConnectModal === 'function') closeHikConnectModal();
+        if (typeof closeUniversalCameraModal === 'function') closeUniversalCameraModal();
+        document.body.style.overflow = '';
+        document.body.style.overflowY = 'auto';
+    }
+});
 
 window.toggleLightboxFullView = function() {
     if (!currentLightboxItem) return;
@@ -4999,8 +5033,8 @@ document.addEventListener('click', function(e) {
         return;
     }
 
-    // 1. Check if target is an image or inside an image card/container
-    const imgEl = (e.target.tagName === 'IMG') ? e.target : e.target.closest('.staff-thumb, .snapshot-card, .snapshot-img, [data-unknown-id]')?.querySelector('img');
+    // Only handle explicit image clicks or explicit 4k badge clicks
+    const imgEl = (e.target.tagName === 'IMG') ? e.target : (e.target.classList.contains('clickable-photo') ? e.target.querySelector('img') : null);
     if (!imgEl) return;
 
     // Ignore navbar brand logo or camera feed canvas/video itself
@@ -5008,9 +5042,6 @@ document.addEventListener('click', function(e) {
 
     const src = imgEl.getAttribute('src');
     if (!src || src.startsWith('data:image/svg')) return; // ignore generic placeholder svgs
-
-    e.stopPropagation();
-    e.preventDefault();
 
     let title = 'Staff Photo Preview';
     let subtitle = 'AiCam Biometric Face ID Profile';

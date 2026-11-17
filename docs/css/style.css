@@ -24,6 +24,12 @@
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
+html {
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  scroll-behavior: smooth;
+}
+
 body {
   background-color: var(--bg-primary);
   color: var(--text-main);
@@ -31,6 +37,13 @@ body {
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
+  overflow-y: auto !important;
+  scroll-behavior: smooth;
+}
+
+.tab-content-pane {
+  overflow-y: visible !important;
+  min-height: 60vh;
 }
 
 /* Scrollbar */
