@@ -18,10 +18,10 @@ class GateTrackingEngine:
         # Default tuned precisely for testing video doorway perspective:
         # P1: Top-Left, P2: Top-Right, P3: Bottom-Right (Threshold Right), P4: Bottom-Left (Threshold Left)
         self.door_polygon = [
-            {"x": 0.120, "y": 0.100},  # P1: Top-Left
-            {"x": 0.440, "y": 0.100},  # P2: Top-Right
-            {"x": 0.440, "y": 0.520},  # P3: Bottom-Right (Threshold Right)
-            {"x": 0.120, "y": 0.520}   # P4: Bottom-Left (Threshold Left)
+            {"x": 0.751, "y": 0.227},  # P1: Top-Left Header
+            {"x": 0.781, "y": 0.416},  # P2: Top-Right Header
+            {"x": 0.706, "y": 0.817},  # P3: Bottom-Right Threshold
+            {"x": 0.616, "y": 0.708}   # P4: Bottom-Left Threshold
         ]
 
         # Invert IN vs OUT if camera is mounted from inside looking out

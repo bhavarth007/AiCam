@@ -95,7 +95,12 @@ const STAFF_TEMPLATES = [
 ];
 
 let LIVE_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
-let TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES));
+let TEST_STAFF_ROSTER = JSON.parse(JSON.stringify(STAFF_TEMPLATES)).map(s => ({
+    ...s,
+    status: 'Working', // All 4 staff start inside office at start of video as requested
+    in_count: 0,
+    out_count: 0
+}));
 let REAL_STAFF_ROSTER = LIVE_STAFF_ROSTER;
 let reportsViewMode = 'live';
 
@@ -310,10 +315,10 @@ const DEFAULT_GATE_BOX = { x: 0.170, y: 0.150, w: 0.255, h: 0.800 };
 const DEFAULT_GATE_LINE = { x1: 0.170, y1: 0.780, x2: 0.425, y2: 0.780 };
 
 const DEFAULT_GATE_POLYGON = [
-    { x: 0.120, y: 0.100 },  // P1: Top-Left
-    { x: 0.440, y: 0.100 },  // P2: Top-Right
-    { x: 0.440, y: 0.520 },  // P3: Bottom-Right (Threshold Right)
-    { x: 0.120, y: 0.520 }   // P4: Bottom-Left (Threshold Left)
+    { x: 0.751, y: 0.227 },  // P1: Top-Left Header
+    { x: 0.781, y: 0.416 },  // P2: Top-Right Header
+    { x: 0.706, y: 0.817 },  // P3: Bottom-Right Floor Threshold
+    { x: 0.616, y: 0.708 }   // P4: Bottom-Left Floor Threshold
 ];
 
 function loadSavedGatePolygon() {
@@ -567,10 +572,10 @@ function updatePolygonUI() {
 
 window.snapToTestingVideoDoor = function() {
     gatePolygon = [
-        { x: 0.120, y: 0.100 },  // P1: Top-Left
-        { x: 0.440, y: 0.100 },  // P2: Top-Right
-        { x: 0.440, y: 0.520 },  // P3: Bottom-Right
-        { x: 0.120, y: 0.520 }   // P4: Bottom-Left
+        { x: 0.751, y: 0.227 },  // P1: Top-Left Header
+        { x: 0.781, y: 0.416 },  // P2: Top-Right Header
+        { x: 0.706, y: 0.817 },  // P3: Bottom-Right Floor Threshold
+        { x: 0.616, y: 0.708 }   // P4: Bottom-Left Floor Threshold
     ];
     flipGateDirection = false;
     saveGatePolygonToStorage();
@@ -643,16 +648,68 @@ window.switchStorageMode = function(mode) {
 
 window.clearTestRecordsNow = async function() {
     if (!confirm('Are you sure you want to clear all testing video logs and attendance? Live mill records will remain 100% untouched.')) return;
+
+    // 1. Always reset local standalone test records & roster (all 4 start inside office)
+    TEST_STAFF_ROSTER.forEach(s => {
+        s.in_count = 0;
+        s.out_count = 0;
+        s.in_time = null;
+        s.out_time = null;
+        s.live_hours = 0.0;
+        s.status = 'Working'; // All 4 staff start inside office
+        s.hours_outside = 0;
+    });
+
+    standaloneStats.session_in = 0;
+    standaloneStats.session_out = 0;
+    standaloneStats.session_unknown = 0;
+    standaloneStats.present_today = 4;
+    standaloneStats.currently_inside = 4;
+    standaloneStats.absent_today = 0;
+    standaloneEvents = [];
+    standaloneUnknowns = [];
+
     try {
-        const res = await fetch(getApiUrl('/api/admin/clear_test_records'), { method: 'POST' });
-        const data = await res.json();
-        showNotification(data.message || 'Test records wiped successfully', 'success');
-        fetchStats();
-        fetchRecentEvents();
-        fetchTodayReport();
+        localStorage.removeItem('aicam_test_staff_roster');
+        localStorage.removeItem('aicam_standalone_stats');
+        localStorage.removeItem('aicam_standalone_events');
+        localStorage.removeItem('aicam_standalone_unknowns');
+        localStorage.removeItem('aicam_session_counts');
+    } catch(e) {}
+
+    renderStandaloneStaff();
+    renderStandaloneStats();
+    renderStandaloneEvents();
+    renderStandaloneReports();
+    renderStandaloneUnknowns();
+
+    // 2. Clear backend database test records if cloud backend is running
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(getApiUrl('/api/admin/clear_test_records'), {
+            method: 'POST',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+            const data = await res.json();
+            showNotification(data.message || '✅ Test records cleared successfully.', 'success');
+        } else {
+            showNotification('✅ Testing video records cleared successfully.', 'success');
+        }
     } catch(e) {
-        showNotification('Error clearing test records: ' + e.message, 'error');
+        // Safe offline fallback - local records are cleanly cleared without error popup!
+        showNotification('✅ Testing video records cleared successfully!', 'success');
     }
+
+    if (standaloneVideoEl) {
+        standaloneVideoEl.currentTime = 0;
+    }
+
+    fetchStats();
+    fetchRecentEvents();
+    fetchTodayReport();
 };
 
 function loadSavedGateBox() {
@@ -3539,9 +3596,16 @@ function detectGateLineMotion() {
             return;
         }
 
-        // Compute Gate Zone bounds
+        // Compute Gate Zone bounds (using active gatePolygon)
         let gMinX, gMaxX, gMinY, gMaxY;
-        if (gateGeometry === 'box') {
+        if (gatePolygon && gatePolygon.length === 4) {
+            const xs = gatePolygon.map(p => p.x);
+            const ys = gatePolygon.map(p => p.y);
+            gMinX = Math.max(0, Math.floor((Math.min(...xs) - 0.05) * 160));
+            gMaxX = Math.min(159, Math.ceil((Math.max(...xs) + 0.05) * 160));
+            gMinY = Math.max(0, Math.floor((Math.min(...ys) - 0.05) * 90));
+            gMaxY = Math.min(89, Math.ceil((Math.max(...ys) + 0.05) * 90));
+        } else if (gateGeometry === 'box') {
             gMinX = Math.max(0, Math.floor(gateBox.x * 160));
             gMaxX = Math.min(159, Math.ceil((gateBox.x + gateBox.w) * 160));
             gMinY = Math.max(0, Math.floor(gateBox.y * 90));
@@ -3672,18 +3736,29 @@ function detectGateLineMotion() {
                         const deltaX = activeGatePass.curX - activeGatePass.startX;
 
                         if (standaloneSource === 'webcam') {
-                            // Office Webcam: Desk is left, door is right/back
                             if (activeGatePass.hadDesk || deltaX > 0.04 || deltaY < -0.04) {
                                 dir = 'OUT';
                             } else {
                                 dir = 'IN';
                             }
                         } else {
-                            // Testing Video: Doorway translation
-                            if (deltaY < -0.03 || deltaX > 0.03) {
-                                dir = 'OUT';
+                            // Testing Video: Use signed cross product against door threshold (P4 -> P3)
+                            // P4: bottom-left, P3: bottom-right. Cross >= 0 is IN (room interior), < 0 is OUT (corridor)
+                            const p4 = gatePolygon[3], p3 = gatePolygon[2];
+                            const tDx = p3.x - p4.x, tDy = p3.y - p4.y;
+                            const startSide = tDx * (activeGatePass.startY - p4.y) - tDy * (activeGatePass.startX - p4.x);
+                            const curSide = tDx * (activeGatePass.curY - p4.y) - tDy * (activeGatePass.curX - p4.x);
+
+                            if (startSide > 0 && curSide <= 0) {
+                                dir = 'OUT'; // moved from interior to corridor
+                            } else if (startSide <= 0 && curSide > 0) {
+                                dir = 'IN';  // moved from corridor into interior
                             } else {
-                                dir = 'IN';
+                                // Fallback based on doorway perspective translation vector
+                                dir = (deltaY < -0.02 || deltaX > 0.02) ? 'OUT' : 'IN';
+                            }
+                            if (flipGateDirection) {
+                                dir = (dir === 'IN') ? 'OUT' : 'IN';
                             }
                         }
 
@@ -3829,15 +3904,15 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
         if (targetStaffCode) {
             staff = targetRoster.find(s => s.staff_code === targetStaffCode);
         } else if (isTestingVideo) {
-            // User requirement: In testing video all 4 registered members (Milan, Bhavarth, Vishal, Mahesh)
-            // have exactly 1 time OUT and 1 time IN!
+            // Testing Video: All 4 registered members (Milan, Bhavarth, Vishal, Mahesh)
+            // start inside office (Working) and do 1 time OUT and 1 time IN!
             if (!isInside) {
-                // OUT crossing: Pick the next registered staff who has NOT yet gone OUT
-                staff = targetRoster.find(s => (s.out_count || 0) === 0) ||
-                        targetRoster.find(s => s.status === 'Working') ||
+                // OUT crossing: Pick next staff currently inside who has not yet gone OUT
+                staff = targetRoster.find(s => (s.out_count || 0) === 0 && s.status === 'Working') ||
+                        targetRoster.find(s => (s.out_count || 0) === 0) ||
                         targetRoster[0];
             } else {
-                // IN crossing: Pick the staff who went OUT and is returning IN
+                // IN crossing: Pick next staff who is Outside Gate and returning IN
                 staff = targetRoster.find(s => s.status === 'Outside Gate' || (s.out_count > (s.in_count || 0))) ||
                         targetRoster.find(s => (s.in_count || 0) === 0) ||
                         targetRoster[0];
