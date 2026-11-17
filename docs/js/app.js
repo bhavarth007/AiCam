@@ -663,11 +663,13 @@ window.clearTestRecordsNow = async function() {
     standaloneStats.session_in = 0;
     standaloneStats.session_out = 0;
     standaloneStats.session_unknown = 0;
+    standaloneStats.unknowns_today = 0;
     standaloneStats.present_today = 4;
     standaloneStats.currently_inside = 4;
     standaloneStats.absent_today = 0;
     standaloneEvents = [];
     standaloneUnknowns = [];
+    if (window.unknownSnapshotsMap) window.unknownSnapshotsMap.clear();
 
     try {
         localStorage.removeItem('aicam_test_staff_roster');
@@ -2722,33 +2724,40 @@ window.toggleFullscreenLightbox = function() {
     }
 };
 
-window.openImageLightbox = function(portraitUrl, fullUrl, date, timestamp, id) {
+window.openImageLightbox = function(portraitUrl, fullUrl, date = 'Today', timestamp = '', id = null) {
     currentLightboxItem = { portraitUrl, fullUrl, date, timestamp, id };
     lightboxShowingFull = false;
 
     const modal = document.getElementById('imageLightboxModal');
     const img = document.getElementById('lightboxImage');
+    const titleEl = document.getElementById('lightboxTitle');
     const dateEl = document.getElementById('lightboxDateTime');
     const toggleBtn = document.getElementById('btnLightboxToggleView');
     const toggleText = document.getElementById('lightboxToggleText');
     const subtext = document.getElementById('lightboxSubtext');
+    const registerBtn = document.getElementById('btnLightboxRegister');
+    const deleteBtn = document.getElementById('btnLightboxDelete');
 
-    // Display image in large crystal clear resolution
     const displayImg = fullUrl || portraitUrl;
     if (img) {
         img.src = displayImg;
         img.style.transform = 'scale(1)';
-        img.style.maxWidth = '94vw';
-        img.style.maxHeight = '82vh';
+        img.style.maxWidth = '95vw';
+        img.style.maxHeight = '84vh';
         img.style.objectFit = 'contain';
+        img.style.display = 'block';
     }
-    if (dateEl) dateEl.textContent = `Date: ${date} | Time: ${timestamp} (Ultra-Clear 4K Fullscreen)`;
+    if (titleEl) titleEl.textContent = '⚠️ UNREGISTERED VISITOR DETAILS';
+    if (dateEl) dateEl.textContent = `Date: ${date || 'Today'} | Time: ${timestamp || ''} (Ultra-Clear 4K Fullscreen)`;
     if (subtext) subtext.textContent = 'Camera: Gate Cam 01 | View: High-Resolution 4K Capture';
     if (toggleText) toggleText.textContent = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'Show Cropped Face' : 'Ultra-HD View';
     if (toggleBtn) toggleBtn.style.display = (portraitUrl && fullUrl && portraitUrl !== fullUrl) ? 'inline-flex' : 'none';
+    if (registerBtn) registerBtn.style.display = id ? 'inline-flex' : 'none';
+    if (deleteBtn) deleteBtn.style.display = id ? 'inline-flex' : 'none';
 
     if (modal) {
         modal.style.display = 'flex';
+        modal.style.zIndex = '9999999';
         document.body.style.overflow = 'hidden';
     }
 };
@@ -3246,6 +3255,15 @@ function initStandaloneRealVideoMode(isSavedActive = null, savedSourcePref = nul
             standaloneVideoEl.srcObject = null;
             standaloneVideoEl.src = 'testing video.mp4';
             standaloneVideoEl.loop = false;
+            standaloneVideoEl.onended = function() {
+                console.log('Testing video finished. Stopping playback.');
+                standaloneVideoEl.pause();
+                isStandaloneCounting = false;
+                standaloneStats.is_counting = false;
+                updateCountingStatusUI(false);
+                showStandbyOverlayImmediate();
+                showNotification('🎬 Testing video playback finished. Counting stopped.', 'info');
+            };
             standaloneVideoEl.load();
             if (shouldCount) {
                 standaloneVideoEl.play().catch(e => console.log('Autoplay handled:', e));
@@ -3367,26 +3385,52 @@ function standaloneResetCounts() {
     standaloneStats.session_in = 0;
     standaloneStats.session_out = 0;
     standaloneStats.session_unknown = 0;
-    [LIVE_STAFF_ROSTER, TEST_STAFF_ROSTER].forEach(roster => {
-        roster.forEach(s => {
-            s.in_count = 0;
-            s.out_count = 0;
-            s.in_time = null;
-            s.out_time = null;
-            s.live_hours = 0.0;
-            s.status = 'Not Checked In';
-            s.hours_outside = 0;
-        });
+    standaloneStats.unknowns_today = 0;
+
+    LIVE_STAFF_ROSTER.forEach(s => {
+        s.in_count = 0;
+        s.out_count = 0;
+        s.in_time = null;
+        s.out_time = null;
+        s.live_hours = 0.0;
+        s.status = 'Not Checked In';
+        s.hours_outside = 0;
     });
-    standaloneStats.currently_inside = 0;
-    standaloneStats.present_today = 0;
-    standaloneStats.absent_today = 4;
+
+    TEST_STAFF_ROSTER.forEach(s => {
+        s.in_count = 0;
+        s.out_count = 0;
+        s.in_time = null;
+        s.out_time = null;
+        s.live_hours = 0.0;
+        s.status = 'Working'; // All 4 registered members start inside office for testing video
+        s.hours_outside = 0;
+    });
+
+    if (reportsViewMode === 'testing' || standaloneSource === 'file') {
+        standaloneStats.currently_inside = 4;
+        standaloneStats.present_today = 4;
+        standaloneStats.absent_today = 0;
+    } else {
+        standaloneStats.currently_inside = 0;
+        standaloneStats.present_today = 0;
+        standaloneStats.absent_today = 4;
+    }
+    standaloneStats.total_staff = 4;
+
     standaloneEvents = [];
     standaloneUnknowns = [];
-    localStorage.removeItem('aicam_staff_roster');
-    localStorage.removeItem('aicam_standalone_stats');
-    localStorage.removeItem('aicam_standalone_events');
-    localStorage.removeItem('aicam_standalone_unknowns');
+    if (window.unknownSnapshotsMap) window.unknownSnapshotsMap.clear();
+
+    try {
+        localStorage.removeItem('aicam_staff_roster');
+        localStorage.removeItem('aicam_test_staff_roster');
+        localStorage.removeItem('aicam_standalone_stats');
+        localStorage.removeItem('aicam_standalone_events');
+        localStorage.removeItem('aicam_standalone_unknowns');
+        localStorage.removeItem('aicam_session_counts');
+    } catch(e) {}
+
     if (standaloneVideoEl) {
         standaloneVideoEl.currentTime = 0;
     }
@@ -3394,7 +3438,7 @@ function standaloneResetCounts() {
     renderStandaloneEvents();
     renderStandaloneReports();
     renderStandaloneUnknowns();
-    showNotification('🔄 Session counts reset to 0! Video rewound.', 'info');
+    showNotification('🔄 Testing video records & counts cleared cleanly!', 'info');
 }
 
 async function standaloneSetVideoSource(type, path = null) {
@@ -3578,8 +3622,33 @@ function getSideOfGateLine(px, py) {
 let testVideoCrossingRotation = 0;
 let simulationPassStep = 0;
 let lastDoorPersonSnapshot = null; // Continuously cached zero-delay snapshot of person inside door quad
+let lastUnknownCaptureTime = 0;    // Cooldown timer to prevent duplicate rapid captures of same unknown
+let unknownImagesCapturedCount = 0; // Maximum 2 images per unknown person
+
+// Check whether normalized (x, y) is strictly inside the door quadrilateral
+function isPointInDoorPolygon(x, y) {
+    if (!gatePolygon || gatePolygon.length < 3) return true;
+    let inside = false;
+    for (let i = 0, j = gatePolygon.length - 1; i < gatePolygon.length; j = i++) {
+        const xi = gatePolygon[i].x, yi = gatePolygon[i].y;
+        const xj = gatePolygon[j].x, yj = gatePolygon[j].y;
+        const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
 
 function detectGateLineMotion() {
+    if (standaloneSource === 'file' && standaloneVideoEl) {
+        if (standaloneVideoEl.ended || (standaloneVideoEl.duration && standaloneVideoEl.currentTime >= (standaloneVideoEl.duration - 0.25))) {
+            standaloneVideoEl.pause();
+            isStandaloneCounting = false;
+            standaloneStats.is_counting = false;
+            updateCountingStatusUI(false);
+            showStandbyOverlayImmediate();
+            return;
+        }
+    }
     if (!isStandaloneCounting || !standaloneVideoEl) return;
     if (standaloneVideoEl.paused || standaloneVideoEl.ended || standaloneVideoEl.readyState < 2) return;
 
@@ -3848,6 +3917,20 @@ function detectGateLineMotion() {
 
 function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, cachedSnap = null) {
     if (!standaloneVideoEl) return;
+
+    const now = Date.now();
+    // In testing video: Max 2 images total of unknown person! In live mode: at least 6s cooldown between distinct unknown persons
+    const isTesting = (standaloneSource === 'file' || reportsViewMode === 'testing');
+    if (isTesting && standaloneUnknowns.length >= 2) {
+        console.log('[Capture] Max 2 unknown person images already captured for testing video. Skipping duplicate.');
+        return;
+    }
+    if (now - lastUnknownCaptureTime < 5000) {
+        console.log('[Capture] Unknown visitor cooldown active (5s). Skipping duplicate capture of same person.');
+        return;
+    }
+    lastUnknownCaptureTime = now;
+
     try {
         let dataUrl = null;
         let fullUrl = null;
@@ -3943,6 +4026,11 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
     const targetRoster = isTestingVideo ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
 
     if (isUnknown) {
+        // Only capture unknown person when inside the door zone
+        if (!isPointInDoorPolygon(posX, posY)) {
+            console.log('[Gate] Motion was outside doorway polygon. Skipping unknown capture.');
+            return;
+        }
         // UNREGISTERED / UNKNOWN VISITOR
         if (isInside) {
             standaloneStats.session_in = (standaloneStats.session_in || 0) + 1;
@@ -4864,29 +4952,7 @@ window.printPersonAuditReport = function() {
 };
 
 
-// ─── Click-to-View Full Photo Lightbox ────────────────────────────────────────
-window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle = 'Biometric Reference Photo') {
-    if (!imgSrc) return;
-    const modal = document.getElementById('imageLightboxModal');
-    const img = document.getElementById('lightboxImage');
-    const titleEl = document.getElementById('lightboxTitle');
-    const dateEl = document.getElementById('lightboxDateTime');
-    const subtext = document.getElementById('lightboxSubtext');
-    const toggleBtn = document.getElementById('btnLightboxToggleView');
-    const registerBtn = document.getElementById('btnLightboxRegister');
-    const deleteBtn = document.getElementById('btnLightboxDelete');
-
-    if (img) img.src = imgSrc;
-    if (titleEl) titleEl.textContent = title;
-    if (dateEl) dateEl.textContent = subtitle;
-    if (subtext) subtext.textContent = 'AiCam Biometric Face ID Profile';
-    if (toggleBtn) toggleBtn.style.display = 'none';
-    if (registerBtn) registerBtn.style.display = 'none';
-    if (deleteBtn) deleteBtn.style.display = 'none';
-
-    if (typeof resetLightboxZoom === 'function') resetLightboxZoom();
-    if (modal) modal.style.display = 'flex';
-};
+// (viewFullPhoto unified below)
 
 
 // ─── Global Event Delegation: Click ANY Photo to View Full Lightbox ──────────
