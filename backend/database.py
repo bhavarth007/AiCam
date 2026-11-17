@@ -14,6 +14,9 @@ def get_connection():
         pass
     return conn
 
+# Alias for compatibility
+get_db_connection = get_connection
+
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
@@ -434,8 +437,8 @@ def record_gate_event(person_type: str, direction: str, staff_id: Optional[int] 
                 # Recorded an OUT without initial IN
                 cursor.execute("""
                     INSERT INTO attendance_logs (staff_id, date, in_time, out_time, total_hours, in_count, out_count, total_outside_hours, last_in_timestamp, last_out_timestamp, status, last_seen, notes, record_mode)
-                    VALUES (?, ?, ?, ?, 0.0, 0, 1, 0.0, NULL, ?, 'Outside', ?, 'Exited through gate', ?)
-                """, (staff_id, today_str, time_str, time_str, now_str, now_str, record_mode))
+                    VALUES (?, ?, NULL, ?, 0.0, 0, 1, 0.0, NULL, ?, 'Outside', ?, 'Exited through gate', ?)
+                """, (staff_id, today_str, time_str, now_str, now_str, record_mode))
 
     conn.commit()
     conn.close()

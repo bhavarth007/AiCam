@@ -322,15 +322,16 @@ class GateTrackingEngine:
 
             if record_mode == "test" and not person_info.get("is_registered"):
                 try:
-                    from backend.database import get_db_connection
+                    from backend.database import get_connection
                     if not hasattr(self, "test_staff_state"):
                         self.test_staff_state = {}
-                    with get_db_connection() as conn:
-                        cur = conn.cursor()
-                        all_staff = [
-                            {"id": r[0], "staff_code": r[1], "name": r[2], "designation": r[3]}
-                            for r in cur.execute("SELECT id, staff_code, name, designation FROM staff ORDER BY id ASC").fetchall()
-                        ]
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    all_staff = [
+                        {"id": r[0], "staff_code": r[1], "name": r[2], "designation": r[3]}
+                        for r in cur.execute("SELECT id, staff_code, name, designation FROM staff WHERE status = 'active' ORDER BY id ASC").fetchall()
+                    ]
+                    conn.close()
                     if all_staff:
                         assigned = None
                         if event_direction == "OUT":

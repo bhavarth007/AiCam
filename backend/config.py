@@ -25,7 +25,7 @@ CAMERA_INDEX = 0  # Default webcam
 DEFAULT_CONFIDENCE_THRESHOLD = 0.50
 FACE_MATCH_THRESHOLD = 0.44  # Cosine similarity threshold for CCTV biometric face recognition
 LINE_CROSSING_BUFFER = 25  # pixel margin for line crossing in/out logic
-LOCK_DOUBLE_COUNT_COOLDOWN = 10.0  # seconds to prevent duplicate counting of same person/object
+LOCK_DOUBLE_COUNT_COOLDOWN = 0.8  # Fast anti-jitter cooldown, permits tailgating / rapid consecutive crossings
 
 # Textile Industry Specific Settings
 TAKA_AVERAGE_LENGTH_METERS = 30  # 20-40 meters typical bunch

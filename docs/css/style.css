@@ -865,16 +865,34 @@ body {
   }
 }
 
-.staff-thumb {
-    cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+/* Universal Big Screen Clickable Photos across Entire Project */
+.staff-thumb,
+.snapshot-img,
+.snapshot-card img,
+#staffGridContainer img,
+#attendanceTableBody img,
+#regPhotoPreview,
+.clickable-photo {
+    cursor: pointer !important;
+    transition: transform 0.2s ease, box-shadow 0.2s ease !important;
 }
-.staff-thumb:hover {
-    transform: scale(1.15);
-    box-shadow: 0 0 14px rgba(6, 182, 212, 0.7);
-    outline: 2px solid #22d3ee;
+.staff-thumb:hover,
+.snapshot-img:hover,
+.snapshot-card img:hover,
+#staffGridContainer img:hover,
+#attendanceTableBody img:hover,
+#regPhotoPreview:hover,
+.clickable-photo:hover {
+    transform: scale(1.08) !important;
+    box-shadow: 0 0 16px rgba(56, 189, 248, 0.75) !important;
+    outline: 2px solid #38bdf8 !important;
 }
-
-.staff-thumb:active {
-    transform: scale(0.95);
+.staff-thumb:active,
+.snapshot-img:active,
+.snapshot-card img:active,
+#staffGridContainer img:active,
+#attendanceTableBody img:active,
+#regPhotoPreview:active,
+.clickable-photo:active {
+    transform: scale(0.96) !important;
 }

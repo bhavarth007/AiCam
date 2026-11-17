@@ -1778,10 +1778,8 @@ function autoSetGatePositionForSource(type) {
 // Global Video & Counting Controls
 window.startLiveCounting = async function() {
     localStorage.setItem('aicam_counting_active', '1');
-    if (!backendAvailable) {
-        standaloneStartCounting();
-        return;
-    }
+    standaloneStartCounting(); // ALWAYS start local video playback & motion tracking loop!
+    if (!backendAvailable) return;
     try {
         const res = await fetch(getApiUrl('/api/video/start_counting'), { method: 'POST' });
         const data = await res.json();
@@ -1789,7 +1787,7 @@ window.startLiveCounting = async function() {
         updateCountingStatusUI(true);
         reloadCameraStream();
     } catch (e) {
-        standaloneStartCounting();
+        // Safe offline fallback handled by standaloneStartCounting
     }
 };
 
@@ -2346,7 +2344,7 @@ async function fetchTodayReportAuto() {
     const dateInput = document.getElementById('reportDatePicker');
     const customDate = dateInput && dateInput.value ? dateInput.value : null;
     const currentMode = (reportsViewMode === 'testing') ? 'test' : 'live';
-    const url = customDate ? `/api/attendance/report?date=${customDate}&mode=${currentMode}` : `/api/attendance/today?mode=${currentMode}`;
+    const url = customDate ? getApiUrl(`/api/attendance/report?date=${encodeURIComponent(customDate)}&mode=${currentMode}`) : getApiUrl(`/api/attendance/today?mode=${currentMode}`);
 
     try {
         const res = await fetch(url);
@@ -2357,29 +2355,34 @@ async function fetchTodayReportAuto() {
             lastReportSig = sig;
             renderAttendanceReportTable(records, data.date);
         }
-    } catch (e) {}
+    } catch (e) {
+        renderStandaloneReports();
+    }
 }
 
 async function fetchTodayReport(customDate = null) {
     const dateInput = document.getElementById('reportDatePicker');
     const reportDate = customDate || (dateInput && dateInput.value ? dateInput.value : getLocalDateString());
 
+    // Render local/standalone testing & live records immediately so UI is 100% responsive
+    renderStandaloneReports(reportDate);
+
     if (isGitHubPages || !backendAvailable) {
-        renderStandaloneReports(reportDate);
         return;
     }
 
     const currentMode = (reportsViewMode === 'testing') ? 'test' : 'live';
-    const url = customDate ? `/api/attendance/report?date=${encodeURIComponent(customDate)}&mode=${currentMode}` : `/api/attendance/today?mode=${currentMode}`;
+    const url = customDate ? getApiUrl(`/api/attendance/report?date=${encodeURIComponent(customDate)}&mode=${currentMode}`) : getApiUrl(`/api/attendance/today?mode=${currentMode}`);
     try {
         const res = await fetch(url);
         const data = await res.json();
         const records = data.records || [];
-        lastReportSig = JSON.stringify(records.map(r => `${r.id}-${r.in_count}-${r.out_count}-${r.status}-${r.live_hours || r.total_hours}`));
-        renderAttendanceReportTable(records, data.date || reportDate);
+        if (records.length > 0) {
+            lastReportSig = JSON.stringify(records.map(r => `${r.id}-${r.in_count}-${r.out_count}-${r.status}-${r.live_hours || r.total_hours}`));
+            renderAttendanceReportTable(records, data.date || reportDate);
+        }
     } catch (e) {
-        console.error('Failed to load backend report, showing local records:', e);
-        renderStandaloneReports(reportDate);
+        console.log('Using local records for display:', e);
     }
 }
 
@@ -2416,12 +2419,13 @@ function renderAttendanceReportTable(records, reportDate) {
 
         // Live or calculated hours
         const hoursVal = r.live_hours !== undefined ? r.live_hours : r.total_hours;
-        const isOutside = (r.status === 'Outside' || (r.out_time && r.status !== 'Working'));
+        const isOutside = (r.status === 'Outside Gate' || r.status === 'Outside' || (r.out_time && r.status !== 'Working'));
 
         // In / Out Counts Badge - Zero-safe
         const inCnt = (r.in_count !== undefined && r.in_count !== null) ? r.in_count : 0;
         const outCnt = (r.out_count !== undefined && r.out_count !== null) ? r.out_count : 0;
-        const isNotArrived = (!r.status || r.status === 'Not Checked In' || inCnt === 0);
+        // Staff members starting inside office ('Working') or stepped OUT ('Outside Gate') are NOT 'Not Arrived'
+        const isNotArrived = (r.status === 'Not Checked In' && inCnt === 0 && outCnt === 0);
 
         const countColHtml = `
             <div style="font-family: monospace; font-size: 0.78rem; display: flex; flex-direction: column; gap: 3px;">
@@ -3573,6 +3577,7 @@ function getSideOfGateLine(px, py) {
 
 let testVideoCrossingRotation = 0;
 let simulationPassStep = 0;
+let lastDoorPersonSnapshot = null; // Continuously cached zero-delay snapshot of person inside door quad
 
 function detectGateLineMotion() {
     if (!isStandaloneCounting || !standaloneVideoEl) return;
@@ -3651,8 +3656,12 @@ function detectGateLineMotion() {
 
         prevFrameData = new Uint8ClampedArray(currData);
 
-        // Require genuine person-sized motion (>= 12 moving pixels in gate) to begin tracking
-        if (gateMotionCount >= 12) {
+        // Target roster strictly defined in scope for safe state checks
+        const isTestingVideo = (standaloneSource === 'file' || reportsViewMode === 'testing');
+        const targetRoster = isTestingVideo ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+
+        // Require genuine person-sized motion (>= 8 moving pixels in gate) to begin tracking
+        if (gateMotionCount >= 8) {
             const normX = (gateSumX / gateMotionCount) / 160;
             const normY = (gateSumY / gateMotionCount) / 90;
 
@@ -3677,7 +3686,7 @@ function detectGateLineMotion() {
                 if (deskMotionCount > 8) activeGatePass.hadDesk = true;
             }
 
-            // ZERO DELAY PERSON SNAPSHOT: Capture right now while person is actively in the doorway!
+            // ZERO DELAY PERSON SNAPSHOT: Continuously cache optical capture during peak motion inside doorway!
             if (standaloneVideoEl && (!activeGatePass.personSnap || gateMotionCount >= activeGatePass.maxMotion)) {
                 try {
                     const rawW = standaloneVideoEl.videoWidth || 640;
@@ -3690,27 +3699,30 @@ function detectGateLineMotion() {
                     const fCtx = fCanvas.getContext('2d');
                     fCtx.drawImage(standaloneVideoEl, 0, 0, fCanvas.width, fCanvas.height);
 
-                    // 2. Focused person crop (centered on the person's body/face)
+                    // 2. Focused person crop (centered on the person's face/body in door frame)
                     const cCanvas = document.createElement('canvas');
                     cCanvas.width = 360;
                     cCanvas.height = 420;
                     const cCtx = cCanvas.getContext('2d');
 
-                    const pW = Math.round(rawW * 0.32);
-                    const pH = Math.round(rawH * 0.58);
+                    const pW = Math.round(rawW * 0.35);
+                    const pH = Math.round(rawH * 0.60);
                     const pX = Math.max(0, Math.min(rawW - pW, Math.round(normX * rawW - pW * 0.45)));
                     const pY = Math.max(0, Math.min(rawH - pH, Math.round(normY * rawH - pH * 0.40)));
 
                     cCtx.drawImage(standaloneVideoEl, pX, pY, pW, pH, 0, 0, 360, 420);
 
-                    activeGatePass.personSnap = {
+                    const snapObj = {
                         cropUrl: cCanvas.toDataURL('image/jpeg', 0.92),
-                        fullUrl: fCanvas.toDataURL('image/jpeg', 0.88)
+                        fullUrl: fCanvas.toDataURL('image/jpeg', 0.88),
+                        time: now
                     };
+                    activeGatePass.personSnap = snapObj;
+                    lastDoorPersonSnapshot = snapObj;
                 } catch(e) {}
             }
 
-            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.03 || activeGatePass.curX > activeGatePass.startX + 0.05) ? 'OUT' : 'IN';
+            const estDir = (activeGatePass.curY < activeGatePass.startY - 0.02 || activeGatePass.curX > activeGatePass.startX + 0.03) ? 'OUT' : 'IN';
             liveGateMotion = {
                 active: true,
                 x: normX,
@@ -3718,19 +3730,58 @@ function detectGateLineMotion() {
                 dir: estDir,
                 count: gateMotionCount
             };
+
+            // REAL-TIME TAILGATING DETECTION: Trigger immediate crossing if person crossed threshold line during continuous passage
+            const p4 = gatePolygon[3], p3 = gatePolygon[2];
+            const tDx = p3.x - p4.x, tDy = p3.y - p4.y;
+            const startSide = tDx * (activeGatePass.startY - p4.y) - tDy * (activeGatePass.startX - p4.x);
+            const curSide = tDx * (activeGatePass.curY - p4.y) - tDy * (activeGatePass.curX - p4.x);
+            const crossedLine = (startSide > 0 && curSide <= 0) || (startSide <= 0 && curSide > 0);
+            const elapsedCur = now - activeGatePass.startTime;
+
+            if (crossedLine && elapsedCur >= 350 && (now - lastMotionCrossingTime >= 400)) {
+                lastMotionCrossingTime = now;
+                let dir = (startSide > 0 && curSide <= 0) ? 'OUT' : 'IN';
+                if (flipGateDirection) dir = (dir === 'IN') ? 'OUT' : 'IN';
+
+                let isUnknown = false;
+                if (activeGatePersonMode === 'unknown') {
+                    isUnknown = true;
+                } else if (activeGatePersonMode === 'bhavarth') {
+                    isUnknown = false;
+                } else {
+                    if (isTestingVideo) {
+                        if (dir === 'OUT') {
+                            const needsOut = targetRoster.some(s => (s.out_count || 0) === 0);
+                            isUnknown = !needsOut;
+                        } else {
+                            const needsIn = targetRoster.some(s => s.status === 'Outside Gate' || (s.in_count || 0) === 0);
+                            isUnknown = !needsIn;
+                        }
+                    } else {
+                        isUnknown = activeGatePass.deskOccupied && !activeGatePass.hadDesk;
+                    }
+                }
+
+                triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap || lastDoorPersonSnapshot);
+
+                // Reset pass coordinates to immediately permit the next tailgating person in line!
+                activeGatePass.startX = normX;
+                activeGatePass.startY = normY;
+                activeGatePass.startTime = now;
+                activeGatePass.maxMotion = 0;
+            }
         } else {
-            // Motion in gate settled or person finished passage
+            // Motion in gate settled or passage completed
             if (activeGatePass) {
                 const elapsed = now - activeGatePass.startTime;
                 const silence = now - activeGatePass.lastSeenTime;
 
-                // STRICT REAL PERSON CRITERIA:
-                // Must have had at least 20 peak moving pixels and taken at least 450ms (never trigger on empty room!)
-                if (silence > 300 && elapsed >= 450 && activeGatePass.maxMotion >= 20) {
-                    if (now - lastMotionCrossingTime >= 2000) {
+                // Threshold-aware completion check (400ms cooldown permits rapid consecutive tailgaters)
+                if (silence > 180 && elapsed >= 300 && activeGatePass.maxMotion >= 12) {
+                    if (now - lastMotionCrossingTime >= 400) {
                         lastMotionCrossingTime = now;
 
-                        // State & trajectory aware direction
                         let dir = 'IN';
                         const deltaY = activeGatePass.curY - activeGatePass.startY;
                         const deltaX = activeGatePass.curX - activeGatePass.startX;
@@ -3742,19 +3793,16 @@ function detectGateLineMotion() {
                                 dir = 'IN';
                             }
                         } else {
-                            // Testing Video: Use signed cross product against door threshold (P4 -> P3)
-                            // P4: bottom-left, P3: bottom-right. Cross >= 0 is IN (room interior), < 0 is OUT (corridor)
                             const p4 = gatePolygon[3], p3 = gatePolygon[2];
                             const tDx = p3.x - p4.x, tDy = p3.y - p4.y;
                             const startSide = tDx * (activeGatePass.startY - p4.y) - tDy * (activeGatePass.startX - p4.x);
                             const curSide = tDx * (activeGatePass.curY - p4.y) - tDy * (activeGatePass.curX - p4.x);
 
                             if (startSide > 0 && curSide <= 0) {
-                                dir = 'OUT'; // moved from interior to corridor
+                                dir = 'OUT';
                             } else if (startSide <= 0 && curSide > 0) {
-                                dir = 'IN';  // moved from corridor into interior
+                                dir = 'IN';
                             } else {
-                                // Fallback based on doorway perspective translation vector
                                 dir = (deltaY < -0.02 || deltaX > 0.02) ? 'OUT' : 'IN';
                             }
                             if (flipGateDirection) {
@@ -3768,10 +3816,7 @@ function detectGateLineMotion() {
                         } else if (activeGatePersonMode === 'bhavarth') {
                             isUnknown = false;
                         } else {
-                            // AUTO Mode:
-                            if (standaloneSource === 'file') {
-                                // In testing video: Ensure all 4 registered staff (Milan, Bhavarth, Vishal, Mahesh)
-                                // have 1 time OUT and 1 time IN before any unknown is counted
+                            if (isTestingVideo) {
                                 if (dir === 'OUT') {
                                     const needsOut = targetRoster.some(s => (s.out_count || 0) === 0);
                                     isUnknown = !needsOut;
@@ -3780,21 +3825,15 @@ function detectGateLineMotion() {
                                     isUnknown = !needsIn;
                                 }
                             } else {
-                                // Live Webcam
-                                if (activeGatePass.deskOccupied && !activeGatePass.hadDesk) {
-                                    isUnknown = true; // Visitor at door while user at desk
-                                } else {
-                                    isUnknown = false; // Bhavarth
-                                }
+                                isUnknown = activeGatePass.deskOccupied && !activeGatePass.hadDesk;
                             }
                         }
 
-                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap);
+                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap || lastDoorPersonSnapshot);
                     }
                     activeGatePass = null;
                     liveGateMotion = null;
-                } else if (silence > 400 || now - activeGatePass.startTime > 8000) {
-                    // Canceled noise or stale detection
+                } else if (silence > 350 || now - activeGatePass.startTime > 8000) {
                     activeGatePass = null;
                     liveGateMotion = null;
                 }
@@ -3813,21 +3852,36 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
         let dataUrl = null;
         let fullUrl = null;
 
-        if (cachedSnap && cachedSnap.cropUrl) {
-            dataUrl = cachedSnap.cropUrl;
-            fullUrl = cachedSnap.fullUrl || dataUrl;
+        // Zero-Delay: Use peak motion person snapshot so unknown photo NEVER shows an empty room!
+        const snapSource = cachedSnap || (activeGatePass && activeGatePass.personSnap) || lastDoorPersonSnapshot;
+
+        if (snapSource && snapSource.cropUrl) {
+            dataUrl = snapSource.cropUrl;
+            fullUrl = snapSource.fullUrl || dataUrl;
         } else {
-            const snapCanvas = document.createElement('canvas');
             const rawW = standaloneVideoEl.videoWidth || 640;
             const rawH = standaloneVideoEl.videoHeight || 480;
+
+            // Focused doorway person crop
+            const cCanvas = document.createElement('canvas');
+            cCanvas.width = 360;
+            cCanvas.height = 420;
+            const cCtx = cCanvas.getContext('2d');
+            const pW = Math.round(rawW * 0.35);
+            const pH = Math.round(rawH * 0.60);
+            const pX = Math.max(0, Math.min(rawW - pW, Math.round(posX * rawW - pW * 0.45)));
+            const pY = Math.max(0, Math.min(rawH - pH, Math.round(posY * rawH - pH * 0.40)));
+            cCtx.drawImage(standaloneVideoEl, pX, pY, pW, pH, 0, 0, 360, 420);
+            dataUrl = cCanvas.toDataURL('image/jpeg', 0.90);
+
+            const snapCanvas = document.createElement('canvas');
             const targetW = 640;
             const targetH = Math.round(targetW * (rawH / rawW)) || 360;
             snapCanvas.width = targetW;
             snapCanvas.height = targetH;
             const sCtx = snapCanvas.getContext('2d');
             sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
-            dataUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
-            fullUrl = dataUrl;
+            fullUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
         }
         const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
         const dateStr = getLocalDateString();
@@ -3983,8 +4037,8 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
                 showNotification(`🚪 Gate Exit: ${staff.name} Checked OUT at ${timeStr}`, 'warning');
             }
 
-            // Sync KPIs strictly with the active roster
-            const presentCount = targetRoster.filter(s => (s.in_count || 0) > 0).length;
+            // Sync KPIs strictly with the active roster (staff working inside count as present)
+            const presentCount = targetRoster.filter(s => (s.in_count || 0) > 0 || s.status === 'Working' || (s.out_count || 0) > 0).length;
             const insideCount = targetRoster.filter(s => s.status === 'Working').length;
             standaloneStats.present_today = presentCount;
             standaloneStats.currently_inside = insideCount;
@@ -4838,52 +4892,6 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
 // ─── Global Event Delegation: Click ANY Photo to View Full Lightbox ──────────
 const GLOBAL_PHOTO_CLICK_LISTENER_ACTIVE = true;
 
-document.addEventListener('click', function(e) {
-    // 1. Staff Thumbnail
-    const thumb = e.target.closest('.staff-thumb');
-    if (thumb) {
-        e.stopPropagation();
-        e.preventDefault();
-        const src = thumb.getAttribute('src');
-        if (!src) return;
-
-        const card = thumb.closest('.kpi-card') || thumb.closest('tr');
-        let title = 'Staff Photo Preview';
-        let subtitle = 'AiCam Biometric Face ID Profile';
-
-        if (card) {
-            const nameEl = card.querySelector('h4') || card.querySelector('td:nth-child(4)');
-            const codeEl = card.querySelector('span') || card.querySelector('td:nth-child(3)');
-            const desigEl = card.querySelector('p') || card.querySelector('td:nth-child(5)');
-            const name = nameEl ? nameEl.textContent.trim() : '';
-            const code = codeEl ? codeEl.textContent.trim() : '';
-            const desig = desigEl ? desigEl.textContent.trim() : '';
-            if (name) title = `${name} ${code ? '(' + code + ')' : ''}`;
-            if (desig) subtitle = `${desig} • High-Resolution Biometric Profile`;
-        }
-
-        window.viewFullPhoto(src, title, subtitle);
-        return;
-    }
-
-    // 2. Unknown Snapshot Card or Thumbnail Click
-    const unkTarget = e.target.closest('.snapshot-card, .snapshot-img, [data-unknown-id]');
-    if (unkTarget && !e.target.closest('button')) {
-        e.stopPropagation();
-        e.preventDefault();
-        const id = unkTarget.getAttribute('data-unknown-id') || (unkTarget.closest('[data-unknown-id]') ? unkTarget.closest('[data-unknown-id]').getAttribute('data-unknown-id') : null);
-        const item = id && window.unknownSnapshotsMap ? window.unknownSnapshotsMap.get(id) : null;
-        const img = unkTarget.tagName === 'IMG' ? unkTarget : unkTarget.querySelector('img');
-        const src = item ? (item.full_path || item.full_url || item.snapshot_path || item.snapshot_url) : (img ? img.getAttribute('src') : null);
-        if (src) {
-            const timeInfo = item ? (item.timestamp || item.time || '') : '';
-            window.viewFullPhoto(src, `⚠️ UNREGISTERED VISITOR ${timeInfo ? '(' + timeInfo + ')' : ''}`, '4K Optical Security Capture');
-        }
-        return;
-    }
-});
-
-// Robust viewFullPhoto implementation
 window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle = 'Biometric Reference Photo') {
     if (!imgSrc) return;
     const modal = document.getElementById('imageLightboxModal');
@@ -4898,14 +4906,14 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
     if (img) {
         img.src = imgSrc;
         img.style.transform = 'scale(1)';
-        img.style.maxHeight = '75vh';
-        img.style.maxWidth = '90vw';
+        img.style.maxHeight = '82vh';
+        img.style.maxWidth = '94vw';
         img.style.objectFit = 'contain';
         img.style.display = 'block';
     }
     if (titleEl) titleEl.textContent = title;
     if (dateEl) dateEl.textContent = subtitle;
-    if (subtext) subtext.textContent = 'AiCam Optical Face ID Verification System';
+    if (subtext) subtext.textContent = 'AiCam Ultra-Clear High Resolution Biometric & Optical View';
     if (toggleBtn) toggleBtn.style.display = 'none';
     if (registerBtn) registerBtn.style.display = 'none';
     if (deleteBtn) deleteBtn.style.display = 'none';
@@ -4914,8 +4922,56 @@ window.viewFullPhoto = function(imgSrc, title = 'Staff Photo Preview', subtitle 
     if (modal) {
         modal.style.display = 'flex';
         modal.style.zIndex = '999999';
+        document.body.style.overflow = 'hidden';
     }
 };
+
+// Universal capture listener: Click ANY visible image in Person Registration, Unknown Log, or Reports to view full screen
+document.addEventListener('click', function(e) {
+    // Ignore interactive control buttons, inputs, links
+    if (e.target.closest('button, a, input, select, textarea, .lightbox-close-btn, #btnZoomIn, #btnZoomOut, #btnZoomReset, #btnFullscreenModal, #btnLightboxToggleView, #btnLightboxRegister, #btnLightboxDelete')) {
+        return;
+    }
+
+    // 1. Check if target is an image or inside an image card/container
+    const imgEl = (e.target.tagName === 'IMG') ? e.target : e.target.closest('.staff-thumb, .snapshot-card, .snapshot-img, [data-unknown-id]')?.querySelector('img');
+    if (!imgEl) return;
+
+    // Ignore navbar brand logo or camera feed canvas/video itself
+    if (imgEl.id === 'navbarBrandLogo' || imgEl.id === 'cameraStream' || imgEl.id === 'lightboxImage') return;
+
+    const src = imgEl.getAttribute('src');
+    if (!src || src.startsWith('data:image/svg')) return; // ignore generic placeholder svgs
+
+    e.stopPropagation();
+    e.preventDefault();
+
+    let title = 'Staff Photo Preview';
+    let subtitle = 'AiCam Biometric Face ID Profile';
+
+    const card = imgEl.closest('.kpi-card, .snapshot-card, tr, .staff-card');
+    if (card) {
+        if (card.classList.contains('snapshot-card') || card.hasAttribute('data-unknown-id')) {
+            const timeEl = card.querySelector('.snapshot-info span[style*="monospace"]') || card.querySelector('span');
+            title = '⚠️ Unregistered Visitor Snapshot';
+            subtitle = timeEl ? `Captured at ${timeEl.textContent.trim()} • High Resolution Gate Capture` : 'Optical Security Camera Capture';
+        } else {
+            const nameEl = card.querySelector('h4') || card.querySelector('td:nth-child(4)');
+            const codeEl = card.querySelector('span[style*="monospace"]') || card.querySelector('td:nth-child(3)');
+            const desigEl = card.querySelector('p') || card.querySelector('td:nth-child(5)');
+            const name = nameEl ? nameEl.textContent.trim() : '';
+            const code = codeEl ? codeEl.textContent.trim() : '';
+            const desig = desigEl ? desigEl.textContent.trim() : '';
+            if (name) title = `${name} ${code ? '(' + code + ')' : ''}`;
+            if (desig) subtitle = `${desig} • Biometric Face ID Profile`;
+        }
+    } else if (imgEl.id === 'regPhotoPreview') {
+        title = 'New Staff Registration Photo';
+        subtitle = 'Biometric Facial Reference Template';
+    }
+
+    window.viewFullPhoto(src, title, subtitle);
+}, true);
 
 /* AICAM_LIVE_WORK_HOURS_TIMER */
 setInterval(() => {
