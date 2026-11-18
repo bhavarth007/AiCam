@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=31.0">
+  <link rel="stylesheet" href="./css/style.css?v=33.0">
 </head>
 <body>
 
@@ -197,7 +197,7 @@
           <div class="cam-controls-bar" style="flex-direction: column; gap: 0.75rem; align-items: stretch; padding-top: 0.75rem;">
 
             <!-- Row 1: Primary Controls (Start / Stop / Reset / Status) -->
-            <div style="display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; background: rgba(15,23,42,0.92); padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+            <div style="display: flex; gap: 0.6rem; align-items: center; justify-content: flex-start; flex-wrap: wrap; background: rgba(15,23,42,0.92); padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
               <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
                 <button id="btnStartCounting" class="btn btn-emerald" style="padding: 0.45rem 1rem; font-weight: 700; font-size: 0.85rem;" onclick="startLiveCounting()">
                   &#9654; Start Camera &amp; Live Counting
@@ -209,15 +209,9 @@
                   &#8635; Reset Counts
                 </button>
               </div>
-
-              <!-- Live Counting Status Badge -->
-              <div id="countingStatusBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 700; color: #fb7185; background: rgba(244,63,94,0.15); border: 1px solid rgba(244,63,94,0.3); padding: 4px 12px; border-radius: 20px;">
-                <span class="pulse-dot" id="statusDot" style="background: #f43f5e; box-shadow: 0 0 8px #f43f5e; animation: none;"></span>
-                <span id="countingStatusText">CAMERA &amp; COUNTING STOPPED</span>
-              </div>
             </div>
 
-            <!-- Row 2: Clean Video Source + Target Selector -->
+            <!-- Row 2: Clean Video Source Selector -->
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
 
               <!-- Clean Source Selector (No repetition) -->
@@ -232,17 +226,6 @@
                   &#128193; Upload Video
                 </label>
                 <input type="file" id="videoFileInput" accept="video/*" style="display: none;" />
-                <button id="btnSrcSim" class="btn btn-secondary" onclick="runSimulatedGateEvent()" title="Run CCTV Simulation Pass & Capture Unknown Visitor">
-                  &#127916; Simulation
-                </button>
-              </div>
-
-              <!-- Biometric Target Selection -->
-              <div style="display: flex; align-items: center; gap: 0.4rem; background: rgba(15,23,42,0.7); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
-                <span style="font-size: 0.72rem; color: #94a3b8; font-weight: 700;">Face ID Target:</span>
-                <button id="btnTargetAuto" class="btn btn-primary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; font-weight: 700;" onclick="setGatePersonTarget('auto')">&#128994; Auto Face ID</button>
-                <button id="btnTargetStaff" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" onclick="setGatePersonTarget('bhavarth')">&#128100; Bhavarth (TXS-002)</button>
-                <button id="btnTargetUnknown" class="btn btn-secondary" style="padding: 0.22rem 0.55rem; font-size: 0.72rem; color: #f87171;" onclick="setGatePersonTarget('unknown')">&#9888;&#65039; Unknown Visitor</button>
               </div>
 
               <!-- Gate Geometry & Zone Editor Panel -->
@@ -315,26 +298,6 @@
           <!-- Dynamically populated camera feed tiles -->
         </div>
 
-        <!-- Live vs Testing Video Storage Mode Selector -->
-        <div style="background: rgba(15,23,42,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 0.65rem 1rem; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <span style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">Storage Mode:</span>
-            <button id="btnViewLiveRecords" class="btn btn-primary" style="padding: 0.3rem 0.75rem; font-size: 0.76rem; font-weight: 700;" onclick="switchStorageMode('live')">
-              🔴 Live Camera Records
-            </button>
-            <button id="btnViewTestRecords" class="btn btn-secondary" style="padding: 0.3rem 0.75rem; font-size: 0.76rem;" onclick="switchStorageMode('testing')">
-              🧪 Testing Video Records
-            </button>
-          </div>
-          <div style="display: flex; align-items: center; gap: 0.6rem;">
-            <span id="storageModeBadge" style="font-size: 0.72rem; font-family: monospace; color: #34d399; font-weight: 700;">
-              🟢 Active: Live Mill Data
-            </span>
-            <button id="btnClearTestRecordsBtn" class="btn btn-secondary" style="padding: 0.25rem 0.65rem; font-size: 0.72rem; border-color: rgba(244,63,94,0.4); color: #fb7185;" onclick="clearTestRecordsNow()">
-              🗑️ Clear Test Records
-            </button>
-          </div>
-        </div>
 
         <!-- Live Gate Events Ticker -->
         <div class="feed-card">
@@ -417,13 +380,16 @@
       
       <!-- Source-Separated Attendance Selector -->
       <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15,23,42,0.7); padding: 0.65rem 1rem; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
-        <div style="display: flex; gap: 0.6rem; align-items: center;">
+        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
           <span style="font-size: 0.8rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.03em;">Attendance Mode:</span>
           <button id="btnReportsViewLive" class="btn btn-primary" style="padding: 0.35rem 0.85rem; font-size: 0.78rem; font-weight: 700;" onclick="setReportsViewMode('live')">
             🎥 Live Camera Records
           </button>
           <button id="btnReportsViewTest" class="btn btn-secondary" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;" onclick="setReportsViewMode('testing')">
             🎬 Testing Video Records
+          </button>
+          <button id="btnClearTestRecordsBtn" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.78rem; border-color: rgba(244,63,94,0.4); color: #fb7185; display: none;" onclick="clearTestRecordsNow()" title="Clear testing video attendance and event records">
+            🗑️ Clear Test Records
           </button>
         </div>
         <div id="reportSourceBanner" style="font-size: 0.78rem; font-family: monospace; color: #34d399; font-weight: 700; display: flex; align-items: center; gap: 6px;">
@@ -1056,6 +1022,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=31.0"></script>
+  <script src="./js/app.js?v=33.0"></script>
 </body>
 </html>

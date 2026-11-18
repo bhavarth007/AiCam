@@ -320,55 +320,6 @@ class GateTrackingEngine:
 
             now_str = datetime.now().strftime("%H:%M:%S")
 
-            if record_mode == "test" and not person_info.get("is_registered"):
-                try:
-                    from backend.database import get_connection
-                    if not hasattr(self, "test_staff_state"):
-                        self.test_staff_state = {}
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    all_staff = [
-                        {"id": r[0], "staff_code": r[1], "name": r[2], "designation": r[3]}
-                        for r in cur.execute("SELECT id, staff_code, name, designation FROM staff WHERE status = 'active' ORDER BY id ASC").fetchall()
-                    ]
-                    conn.close()
-                    if all_staff:
-                        assigned = None
-                        if event_direction == "OUT":
-                            for s in all_staff:
-                                st = self.test_staff_state.get(s["id"], {"in": 0, "out": 0})
-                                if st["out"] == 0:
-                                    assigned = s
-                                    break
-                            if not assigned:
-                                assigned = all_staff[0]
-                            self.test_staff_state.setdefault(assigned["id"], {"in": 0, "out": 0})["out"] += 1
-                        else:
-                            for s in all_staff:
-                                st = self.test_staff_state.get(s["id"], {"in": 0, "out": 0})
-                                if st["out"] > st["in"]:
-                                    assigned = s
-                                    break
-                            if not assigned:
-                                for s in all_staff:
-                                    st = self.test_staff_state.get(s["id"], {"in": 0, "out": 0})
-                                    if st["in"] == 0:
-                                        assigned = s
-                                        break
-                            if not assigned:
-                                assigned = all_staff[0]
-                            self.test_staff_state.setdefault(assigned["id"], {"in": 0, "out": 0})["in"] += 1
-
-                        person_info["is_registered"] = True
-                        person_info["staff_id"] = assigned["id"]
-                        person_info["staff_code"] = assigned["staff_code"]
-                        person_info["name"] = assigned["name"]
-                        person_info["designation"] = assigned["designation"]
-                        person_info["confidence"] = 0.96
-                        staff_id = assigned["id"]
-                except Exception as e:
-                    print(f"[TrackingEngine] Test staff assignment warning: {e}")
-
             if person_info.get("is_registered"):
                 record_gate_event(
                     person_type="Registered",

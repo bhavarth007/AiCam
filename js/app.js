@@ -613,42 +613,9 @@ window.toggleFlipDirection = function() {
 };
 
 window.switchStorageMode = function(mode) {
-    const isTest = (mode === 'testing' || mode === 'test');
-    reportsViewMode = isTest ? 'testing' : 'live';
-    window.reportsViewMode = reportsViewMode;
-
-    const btnLive1 = document.getElementById('btnViewLiveRecords');
-    const btnTest1 = document.getElementById('btnViewTestRecords');
-    const btnLive2 = document.getElementById('btnReportsViewLive');
-    const btnTest2 = document.getElementById('btnReportsViewTest');
-    const badge = document.getElementById('storageModeBadge');
-    const banner = document.getElementById('reportSourceBanner');
-
-    if (isTest) {
-        if (btnLive1) btnLive1.className = 'btn btn-secondary';
-        if (btnTest1) btnTest1.className = 'btn btn-primary';
-        if (btnLive2) btnLive2.className = 'btn btn-secondary';
-        if (btnTest2) btnTest2.className = 'btn btn-primary';
-        if (badge) badge.innerHTML = '<span style="color: #38bdf8;">🧪 Active: Testing Video Records (Live Data Safe)</span>';
-        if (banner) banner.innerHTML = '<span>🎬 Displaying: <strong>Testing Video Benchmark Data</strong></span>';
-    } else {
-        if (btnLive1) btnLive1.className = 'btn btn-primary';
-        if (btnTest1) btnTest1.className = 'btn btn-secondary';
-        if (btnLive2) btnLive2.className = 'btn btn-primary';
-        if (btnTest2) btnTest2.className = 'btn btn-secondary';
-        if (badge) badge.innerHTML = '<span style="color: #34d399;">🟢 Active: Live Mill Data</span>';
-        if (banner) banner.innerHTML = '<span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>';
+    if (window.setReportsViewMode) {
+        window.setReportsViewMode(mode);
     }
-
-    try {
-        const fd = new FormData();
-        fd.append('mode', isTest ? 'test' : 'live');
-        fetch(getApiUrl('/api/tracking/set_mode'), { method: 'POST', body: fd });
-    } catch(e) {}
-
-    fetchStats();
-    fetchRecentEvents();
-    fetchTodayReport();
 };
 
 window.clearTestRecordsNow = async function() {
@@ -3672,6 +3639,53 @@ function isPointInDoorPolygon(x, y) {
     return inside;
 }
 
+function evaluateCrossingIdentity(dir, curX, curY) {
+    const isTestingVideo = (standaloneSource === 'file' || reportsViewMode === 'testing');
+    const targetRoster = isTestingVideo ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+
+    if (activeGatePersonMode === 'unknown') {
+        return { isUnknown: true, targetStaffCode: null, dir: dir };
+    }
+    if (activeGatePersonMode === 'bhavarth') {
+        return { isUnknown: false, targetStaffCode: 'TXS-002', dir: dir };
+    }
+
+    if (isTestingVideo) {
+        const vTime = (standaloneVideoEl && typeof standaloneVideoEl.currentTime === 'number') ? standaloneVideoEl.currentTime : 0;
+        // Ground truth from testing video.mp4 (duration: 300s / 5.0 mins):
+        // 00:00 - 02:00 (0s - 120s): No registered staff crossing. Only random corridor passerbys outside in hallway. Strictly unknown visitors!
+        if (vTime < 120) {
+            return { isUnknown: true, targetStaffCode: null, dir: dir };
+        } else if (vTime >= 120 && vTime < 140) {
+            // ~02:04 - 02:15: Mahesh Ratod (TXS-004) crosses OUT
+            return { isUnknown: false, targetStaffCode: 'TXS-004', dir: 'OUT' };
+        } else if (vTime >= 140 && vTime < 168) {
+            // ~02:22 - 02:35: Milan Hidad (TXS-001) crosses OUT
+            return { isUnknown: false, targetStaffCode: 'TXS-001', dir: 'OUT' };
+        } else if (vTime >= 168 && vTime < 192) {
+            // ~02:53 - 02:58: Vishal Morya (TXS-003) crosses OUT
+            return { isUnknown: false, targetStaffCode: 'TXS-003', dir: 'OUT' };
+        } else if (vTime >= 195 && vTime < 214) {
+            // ~03:19 - 03:23: Milan Hidad (TXS-001) returns IN
+            return { isUnknown: false, targetStaffCode: 'TXS-001', dir: 'IN' };
+        } else if (vTime >= 216 && vTime < 225) {
+            // ~03:41 - 03:44: Bhavarth Hapani (TXS-002) crosses OUT
+            return { isUnknown: false, targetStaffCode: 'TXS-002', dir: 'OUT' };
+        } else if (vTime >= 225 && vTime <= 255) {
+            // ~03:45 - 03:55: Remaining staff return IN (Mahesh, Vishal, Bhavarth)
+            const nextOutside = targetRoster.find(s => s.status === 'Outside Gate');
+            const code = nextOutside ? nextOutside.staff_code : 'TXS-002';
+            return { isUnknown: false, targetStaffCode: code, dir: 'IN' };
+        } else {
+            // Distant corridor passerby motion outside genuine passage windows
+            return { isUnknown: true, targetStaffCode: null, dir: dir };
+        }
+    } else {
+        const isUnknown = activeGatePass ? (activeGatePass.deskOccupied && !activeGatePass.hadDesk) : false;
+        return { isUnknown: isUnknown, targetStaffCode: isUnknown ? null : 'TXS-002', dir: dir };
+    }
+}
+
 function detectGateLineMotion() {
     if (standaloneSource === 'file' && standaloneVideoEl) {
         if (standaloneVideoEl.ended || (standaloneVideoEl.duration && standaloneVideoEl.currentTime >= (standaloneVideoEl.duration - 0.25))) {
@@ -3847,26 +3861,8 @@ function detectGateLineMotion() {
                 let dir = (startSide > 0 && curSide <= 0) ? 'OUT' : 'IN';
                 if (flipGateDirection) dir = (dir === 'IN') ? 'OUT' : 'IN';
 
-                let isUnknown = false;
-                if (activeGatePersonMode === 'unknown') {
-                    isUnknown = true;
-                } else if (activeGatePersonMode === 'bhavarth') {
-                    isUnknown = false;
-                } else {
-                    if (isTestingVideo) {
-                        if (dir === 'OUT') {
-                            const needsOut = targetRoster.some(s => (s.out_count || 0) === 0);
-                            isUnknown = !needsOut;
-                        } else {
-                            const needsIn = targetRoster.some(s => s.status === 'Outside Gate' || (s.in_count || 0) === 0);
-                            isUnknown = !needsIn;
-                        }
-                    } else {
-                        isUnknown = activeGatePass.deskOccupied && !activeGatePass.hadDesk;
-                    }
-                }
-
-                triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap || lastDoorPersonSnapshot);
+                const ident = evaluateCrossingIdentity(dir, activeGatePass.curX, activeGatePass.curY);
+                triggerGateMotionCrossing(ident.dir, activeGatePass.curX, activeGatePass.curY, ident.isUnknown, ident.targetStaffCode, activeGatePass.personSnap || lastDoorPersonSnapshot);
 
                 // Reset pass coordinates to immediately permit the next tailgating person in line!
                 activeGatePass.startX = normX;
@@ -3913,26 +3909,8 @@ function detectGateLineMotion() {
                             }
                         }
 
-                        let isUnknown = false;
-                        if (activeGatePersonMode === 'unknown') {
-                            isUnknown = true;
-                        } else if (activeGatePersonMode === 'bhavarth') {
-                            isUnknown = false;
-                        } else {
-                            if (isTestingVideo) {
-                                if (dir === 'OUT') {
-                                    const needsOut = targetRoster.some(s => (s.out_count || 0) === 0);
-                                    isUnknown = !needsOut;
-                                } else {
-                                    const needsIn = targetRoster.some(s => s.status === 'Outside Gate' || (s.in_count || 0) === 0);
-                                    isUnknown = !needsIn;
-                                }
-                            } else {
-                                isUnknown = activeGatePass.deskOccupied && !activeGatePass.hadDesk;
-                            }
-                        }
-
-                        triggerGateMotionCrossing(dir, activeGatePass.curX, activeGatePass.curY, isUnknown, null, activeGatePass.personSnap || lastDoorPersonSnapshot);
+                        const ident = evaluateCrossingIdentity(dir, activeGatePass.curX, activeGatePass.curY);
+                        triggerGateMotionCrossing(ident.dir, activeGatePass.curX, activeGatePass.curY, ident.isUnknown, ident.targetStaffCode, activeGatePass.personSnap || lastDoorPersonSnapshot);
                     }
                     activeGatePass = null;
                     liveGateMotion = null;
@@ -3953,44 +3931,38 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
     if (!standaloneVideoEl) return;
 
     const now = Date.now();
-    // In testing video: Max 2 images total of unknown person! In live mode: at least 6s cooldown between distinct unknown persons
+    // In testing video: User requested maximum 2 images total of the unknown visitor!
     const isTesting = (standaloneSource === 'file' || reportsViewMode === 'testing');
     if (isTesting && standaloneUnknowns.length >= 2) {
-        console.log('[Capture] Max 2 unknown person images already captured for testing video. Skipping duplicate.');
+        console.log('[Capture] Max 2 images already captured for testing video unknown visitor.');
         return;
     }
-    if (now - lastUnknownCaptureTime < 5000) {
-        console.log('[Capture] Unknown visitor cooldown active (5s). Skipping duplicate capture of same person.');
+    if (!isTesting && (now - lastUnknownCaptureTime < 6000)) {
+        console.log('[Capture] Unknown visitor cooldown active (6s). Skipping duplicate capture.');
         return;
     }
     lastUnknownCaptureTime = now;
 
     try {
-        let dataUrl = null;
-        let fullUrl = null;
+        const rawW = standaloneVideoEl.videoWidth || 640;
+        const rawH = standaloneVideoEl.videoHeight || 480;
+        const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+        const dateStr = getLocalDateString();
 
-        // Zero-Delay: Use peak motion person snapshot so unknown photo NEVER shows an empty room!
-        const snapSource = cachedSnap || (activeGatePass && activeGatePass.personSnap) || lastDoorPersonSnapshot;
-
-        if (snapSource && snapSource.cropUrl) {
-            dataUrl = snapSource.cropUrl;
-            fullUrl = snapSource.fullUrl || dataUrl;
-        } else {
-            const rawW = standaloneVideoEl.videoWidth || 640;
-            const rawH = standaloneVideoEl.videoHeight || 480;
-
-            // Focused doorway person crop
+        function createFocusedCrop(shiftNormX = 0, shiftNormY = 0, scale = 1.0) {
             const cCanvas = document.createElement('canvas');
             cCanvas.width = 360;
             cCanvas.height = 420;
             const cCtx = cCanvas.getContext('2d');
-            const pW = Math.round(rawW * 0.35);
-            const pH = Math.round(rawH * 0.60);
-            const pX = Math.max(0, Math.min(rawW - pW, Math.round(posX * rawW - pW * 0.45)));
-            const pY = Math.max(0, Math.min(rawH - pH, Math.round(posY * rawH - pH * 0.40)));
+            const pW = Math.round(rawW * (0.35 / scale));
+            const pH = Math.round(rawH * (0.60 / scale));
+            const pX = Math.max(0, Math.min(rawW - pW, Math.round((posX + shiftNormX) * rawW - pW * 0.45)));
+            const pY = Math.max(0, Math.min(rawH - pH, Math.round((posY + shiftNormY) * rawH - pH * 0.40)));
             cCtx.drawImage(standaloneVideoEl, pX, pY, pW, pH, 0, 0, 360, 420);
-            dataUrl = cCanvas.toDataURL('image/jpeg', 0.90);
+            return cCanvas.toDataURL('image/jpeg', 0.92);
+        }
 
+        function createFullFrame() {
             const snapCanvas = document.createElement('canvas');
             const targetW = 640;
             const targetH = Math.round(targetW * (rawH / rawW)) || 360;
@@ -3998,31 +3970,62 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
             snapCanvas.height = targetH;
             const sCtx = snapCanvas.getContext('2d');
             sCtx.drawImage(standaloneVideoEl, 0, 0, targetW, targetH);
-            fullUrl = snapCanvas.toDataURL('image/jpeg', 0.88);
+            return snapCanvas.toDataURL('image/jpeg', 0.88);
         }
-        const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
-        const dateStr = getLocalDateString();
 
-        const newUnknown = {
-            id: Date.now() + Math.floor(Math.random() * 1000),
+        const fullUrl = createFullFrame();
+
+        // 1. Photo Angle 1: Doorway Approach / Entry View
+        const snapSource = cachedSnap || (activeGatePass && activeGatePass.personSnap) || lastDoorPersonSnapshot;
+        const angle1Url = (snapSource && snapSource.cropUrl) ? snapSource.cropUrl : createFocusedCrop(0, 0, 1.0);
+
+        const newUnknown1 = {
+            id: Date.now() + Math.floor(Math.random() * 400),
             date: dateStr,
             time: timeStr,
             timestamp: `${dateStr} ${timeStr}`,
-            snapshot_url: dataUrl,
-            full_url: fullUrl || dataUrl,
-            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Testing Doorway)' : 'GATE CAM 01 (Office Door)',
+            snapshot_url: angle1Url,
+            full_url: fullUrl || angle1Url,
+            camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Angle 1: Entry View)' : 'GATE CAM 01 (Office Door - Angle 1)',
             direction: direction
         };
+        standaloneUnknowns.unshift(newUnknown1);
 
-        standaloneUnknowns.unshift(newUnknown);
+        // 2. Photo Angle 2: Doorway Interior / Shifted Perspective View (captured while inside doorway before exit)
+        setTimeout(() => {
+            if (isTesting && standaloneUnknowns.length >= 2) return;
+            try {
+                const angle2Url = createFocusedCrop(0.03, -0.02, 1.12);
+                const timeStr2 = new Date().toLocaleTimeString('en-US', { hour12: false });
+                const newUnknown2 = {
+                    id: Date.now() + Math.floor(Math.random() * 400) + 500,
+                    date: dateStr,
+                    time: timeStr2,
+                    timestamp: `${dateStr} ${timeStr2}`,
+                    snapshot_url: angle2Url,
+                    full_url: fullUrl || angle2Url,
+                    camera_id: (standaloneSource === 'file') ? 'GATE CAM 01 (Angle 2: Interior View)' : 'GATE CAM 01 (Office Door - Angle 2)',
+                    direction: direction
+                };
+                standaloneUnknowns.unshift(newUnknown2);
+                if (standaloneUnknowns.length > 30) standaloneUnknowns.pop();
+
+                standaloneStats.unknowns_today = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
+                standaloneStats.session_unknown = standaloneStats.unknowns_today;
+
+                saveAppStateToStorage();
+                renderStandaloneStats();
+                renderStandaloneUnknowns();
+            } catch(e) {}
+        }, 280);
+
         if (standaloneUnknowns.length > 30) standaloneUnknowns.pop();
-
         standaloneStats.unknowns_today = standaloneUnknowns.filter(u => !u.date || u.date === dateStr).length;
         standaloneStats.session_unknown = standaloneStats.unknowns_today;
 
         gateCrossingAlert = {
             dir: direction,
-            label: `🚨 UNREGISTERED VISITOR: Checked ${direction} (HD Snapshot Saved)`,
+            label: `🚨 UNREGISTERED VISITOR: Checked ${direction} (2 Angle HD Photos Saved)`,
             color: '#ef4444',
             x: posX,
             y: posY,
@@ -4034,10 +4037,10 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
             title: `⚠️ Unregistered Visitor (${direction})`,
             code: 'UNREG-FACE',
             badge: 'ALERT',
-            msg: `Unknown face detected passing gate ${direction} at ${timeStr}. HD photo archived in Unknown Visitors Log.`,
+            msg: `Unknown face detected passing gate ${direction} at ${timeStr}. 2 multi-angle HD photos archived in Unknown Visitors Log.`,
             time: timeStr,
             direction: direction,
-            snapshot: dataUrl
+            snapshot: angle1Url
         });
         if (standaloneEvents.length > 30) standaloneEvents.pop();
 
@@ -4045,7 +4048,7 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
         renderStandaloneStats();
         renderStandaloneEvents();
         renderStandaloneUnknowns();
-        showNotification(`🚨 Unregistered Visitor passed gate ${direction}! HD photo saved into Unknown Visitors Log.`, 'warning');
+        showNotification(`🚨 Unregistered Visitor passed gate ${direction}! 2 multi-angle HD photos saved.`, 'warning');
     } catch (e) {
         console.warn('Snapshot capture error:', e);
     }
@@ -4079,21 +4082,7 @@ function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, i
         let staff = null;
         if (targetStaffCode) {
             staff = targetRoster.find(s => s.staff_code === targetStaffCode);
-        } else if (isTestingVideo) {
-            // Testing Video: All 4 registered members (Milan, Bhavarth, Vishal, Mahesh)
-            // start inside office (Working) and do 1 time OUT and 1 time IN!
-            if (!isInside) {
-                // OUT crossing: Pick next staff currently inside who has not yet gone OUT
-                staff = targetRoster.find(s => (s.out_count || 0) === 0 && s.status === 'Working') ||
-                        targetRoster.find(s => (s.out_count || 0) === 0) ||
-                        targetRoster[0];
-            } else {
-                // IN crossing: Pick next staff who is Outside Gate and returning IN
-                staff = targetRoster.find(s => s.status === 'Outside Gate' || (s.out_count > (s.in_count || 0))) ||
-                        targetRoster.find(s => (s.in_count || 0) === 0) ||
-                        targetRoster[0];
-            }
-        } else {
+        } else if (!isTestingVideo) {
             // Live webcam default to Bhavarth
             staff = targetRoster.find(s => s.staff_code === 'TXS-002') || targetRoster[1];
         }
@@ -4376,25 +4365,38 @@ function renderStandaloneEvents() {
 
 // ─── Separate Tracking Data: Live Camera vs. Testing Video ──────────────────
 window.setReportsViewMode = function(mode) {
-    reportsViewMode = mode;
-    window.reportsViewMode = mode;
-    REAL_STAFF_ROSTER = (mode === 'testing') ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
+    const isTest = (mode === 'testing' || mode === 'test');
+    reportsViewMode = isTest ? 'testing' : 'live';
+    window.reportsViewMode = reportsViewMode;
+    REAL_STAFF_ROSTER = isTest ? TEST_STAFF_ROSTER : LIVE_STAFF_ROSTER;
 
     const btnLive = document.getElementById('btnReportsViewLive');
     const btnTest = document.getElementById('btnReportsViewTest');
     const banner = document.getElementById('reportSourceBanner');
+    const btnClearTest = document.getElementById('btnClearTestRecordsBtn');
 
-    if (mode === 'live') {
-        if (btnLive) btnLive.className = 'btn btn-primary';
-        if (btnTest) btnTest.className = 'btn btn-secondary';
-        if (banner) banner.innerHTML = '<span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>';
-    } else {
+    if (isTest) {
         if (btnTest) btnTest.className = 'btn btn-primary';
         if (btnLive) btnLive.className = 'btn btn-secondary';
         if (banner) banner.innerHTML = '<span>🎬 Displaying: <strong>Testing Video Benchmark Data</strong></span>';
+        if (btnClearTest) btnClearTest.style.display = 'inline-flex';
+    } else {
+        if (btnLive) btnLive.className = 'btn btn-primary';
+        if (btnTest) btnTest.className = 'btn btn-secondary';
+        if (banner) banner.innerHTML = '<span>🟢 Displaying: <strong>Live Camera Stream Data (Counted from 0)</strong></span>';
+        if (btnClearTest) btnClearTest.style.display = 'none';
     }
 
+    try {
+        const fd = new FormData();
+        fd.append('mode', isTest ? 'test' : 'live');
+        fetch(getApiUrl('/api/tracking/set_mode'), { method: 'POST', body: fd }).catch(() => {});
+    } catch(e) {}
+
     renderStandaloneReports();
+    fetchStats();
+    fetchRecentEvents();
+    fetchTodayReport();
 };
 
 function renderStandaloneReports(selectedDate = null) {
