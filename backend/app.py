@@ -268,6 +268,121 @@ def set_tracking_mode(mode: str = Form(...)):
     stream_manager.set_record_mode(clean_mode)
     return {"status": "success", "record_mode": stream_manager.record_mode}
 
+@app.post("/api/tracking/analyze_mobile_frame")
+def analyze_mobile_frame(
+    image_base64: str = Form(...),
+    direction: str = Form("IN"),
+    record_mode: str = Form("live")
+):
+    """Receives a live camera frame from a mobile phone browser, runs YOLO-pose + FaceEngine recognition,
+    logs the real IN/OUT gate event into SQLite, and returns the recognized identity."""
+    try:
+        b64_data = image_base64.split(",")[-1] if "," in image_base64 else image_base64
+        img_bytes = base64.b64decode(b64_data)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Invalid image frame")
+
+        clean_dir = "OUT" if str(direction).upper() == "OUT" else "IN"
+        clean_mode = "test" if record_mode == "test" else "live"
+        now_str = datetime.now().strftime("%H:%M:%S")
+
+        results = face_engine.pose_model(frame, verbose=False, classes=[0], conf=0.35)
+        best_person = None
+        best_conf = -1.0
+
+        for r in results:
+            if r.boxes is None or len(r.boxes) == 0:
+                continue
+            boxes = r.boxes.xyxy.cpu().numpy()
+            kpts_data = r.keypoints
+            kpts = kpts_data.data.cpu().numpy() if kpts_data is not None else [None] * len(boxes)
+            for idx, box in enumerate(boxes):
+                kp = kpts[idx] if idx < len(kpts) else np.zeros((17, 3))
+                p_info = face_engine.process_person_detection(frame, box.tolist(), kp, capture_unknown=False)
+                score = p_info.get("confidence", 0.0) + (1.0 if p_info.get("is_registered") else 0.0)
+                if score > best_conf:
+                    best_conf = score
+                    best_person = p_info
+
+        if best_person is None:
+            return {"status": "no_person", "is_registered": False, "name": "No Person Detected"}
+
+        if best_person.get("is_registered"):
+            if clean_dir == "IN":
+                tracking_engine.count_in += 1
+            else:
+                tracking_engine.count_out += 1
+            record_gate_event(
+                person_type="Registered",
+                direction=clean_dir,
+                staff_id=best_person.get("staff_id"),
+                confidence=best_person.get("confidence", 0.0),
+                record_mode=clean_mode
+            )
+            tracking_engine.recent_events.insert(0, {
+                "time": now_str,
+                "direction": clean_dir,
+                "type": "registered",
+                "record_mode": clean_mode,
+                "title": f"{best_person.get('name')} ({best_person.get('designation')})",
+                "code": best_person.get("staff_code"),
+                "badge": f"Gate {clean_dir}",
+                "msg": f"Mobile Live AI Verified ({best_person.get('confidence', 0):.0%}). Crossed {clean_dir} at {now_str}."
+            })
+            tracking_engine.recent_events = tracking_engine.recent_events[:40]
+            return {
+                "status": "success",
+                "is_registered": True,
+                "staff_id": best_person.get("staff_id"),
+                "staff_code": best_person.get("staff_code"),
+                "name": best_person.get("name"),
+                "designation": best_person.get("designation"),
+                "confidence": round(float(best_person.get("confidence", 0.0)), 3),
+                "direction": clean_dir
+            }
+        else:
+            tracking_engine.count_unknown += 1
+            snap_path, full_snap_path = face_engine.save_unknown_snapshot(
+                face_crop=best_person.get("face_crop"),
+                portrait_crop=best_person.get("portrait_crop"),
+                full_frame=best_person.get("full_frame")
+            )
+            from backend.database import log_unknown_visitor
+            notes_text = f"full:{full_snap_path}" if full_snap_path else f"Mobile Live Unknown {clean_dir} at {now_str}"
+            log_unknown_visitor(
+                snapshot_path=snap_path or "",
+                camera_id="Mobile Live Cam",
+                notes=notes_text,
+                record_mode=clean_mode
+            )
+            tracking_engine.recent_events.insert(0, {
+                "time": now_str,
+                "direction": clean_dir,
+                "type": "unknown",
+                "record_mode": clean_mode,
+                "title": "⚠️ Unknown Visitor Detected",
+                "code": "UNREG-FACE",
+                "badge": "ALERT",
+                "snapshot": snap_path,
+                "msg": f"Unregistered person crossed door {clean_dir} on Mobile Live Cam. Snapshot archived."
+            })
+            tracking_engine.recent_events = tracking_engine.recent_events[:40]
+            return {
+                "status": "success",
+                "is_registered": False,
+                "name": "Unknown Person",
+                "snapshot_url": snap_path,
+                "full_url": full_snap_path,
+                "confidence": round(float(best_person.get("confidence", 0.0)), 3),
+                "direction": clean_dir
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/admin/clear_test_records")
 def clear_test_data_endpoint():
     """Wipes test-run gate events, attendance, and unknown visitors. Leaves live data 100% untouched."""

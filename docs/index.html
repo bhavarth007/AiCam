@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=33.0">
+  <link rel="stylesheet" href="./css/style.css?v=34.0">
 </head>
 <body>
 
@@ -167,7 +167,7 @@
 
             <!-- 2. Real Video / Webcam Player (used on GitHub Pages or standalone browser mode with 0-sec delay) -->
             <video id="html5VideoPlayer"
-                   src=""
+                   autoplay
                    playsinline
                    muted
                    crossorigin="anonymous"
@@ -218,6 +218,9 @@
               <div class="source-selector" style="flex-wrap: wrap; margin: 0;">
                 <button id="btnSrcWebcam" class="btn btn-primary" onclick="setVideoSource('webcam')">
                   &#128249; Live Webcam
+                </button>
+                <button id="btnFlipCamera" class="btn btn-secondary" onclick="flipDeviceCamera()" title="Switch between Rear and Front camera on Mobile">
+                  &#128260; Rear / Front
                 </button>
                 <button id="btnSrcTestVideo" class="btn btn-secondary" onclick="setVideoSource('file')" title="Load testing video.mp4">
                   &#127910; Testing Video
@@ -1022,6 +1025,6 @@
     </div>
   </div>
 
-  <script src="./js/app.js?v=33.0"></script>
+  <script src="./js/app.js?v=34.0"></script>
 </body>
 </html>

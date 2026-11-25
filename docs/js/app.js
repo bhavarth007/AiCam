@@ -3442,10 +3442,46 @@ function standaloneResetCounts() {
     showNotification('🔄 Testing video records & counts cleared cleanly!', 'info');
 }
 
+let mobileCameraFacing = /Android|iPhone|iPad|iPod|Samsung/i.test(navigator.userAgent) ? 'environment' : 'user';
+
+async function openDeviceCameraStream(facing = mobileCameraFacing) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API requires HTTPS and a supported mobile/desktop browser.');
+    }
+    const attempts = [
+        { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: facing } }, audio: false },
+        { video: { facingMode: facing }, audio: false },
+        { video: true, audio: false }
+    ];
+    let lastErr = null;
+    for (const constraints of attempts) {
+        try {
+            return await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+            lastErr = err;
+            if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+                throw err;
+            }
+        }
+    }
+    throw lastErr || new Error('Unable to access camera');
+}
+
+window.flipDeviceCamera = async function() {
+    mobileCameraFacing = (mobileCameraFacing === 'environment') ? 'user' : 'environment';
+    const label = mobileCameraFacing === 'environment' ? 'Rear Camera' : 'Front Camera';
+    showNotification(`🔄 Switching to ${label}...`, 'info');
+    await standaloneSetVideoSource('webcam');
+};
+
 async function standaloneSetVideoSource(type, path = null) {
     standaloneSource = type;
     if (!standaloneVideoEl) standaloneVideoEl = document.getElementById('html5VideoPlayer');
     if (!standaloneVideoEl) return;
+
+    const imgStream = document.getElementById('cameraStream');
+    if (imgStream) imgStream.style.display = 'none';
+    standaloneVideoEl.style.display = 'block';
 
     const btnWebcam = document.getElementById('btnSrcWebcam');
     const btnTest = document.getElementById('btnSrcTestVideo');
@@ -3472,26 +3508,26 @@ async function standaloneSetVideoSource(type, path = null) {
                 standaloneWebcamStream.getTracks().forEach(t => t.stop());
                 standaloneWebcamStream = null;
             }
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
-            });
+            const stream = await openDeviceCameraStream(mobileCameraFacing);
             standaloneWebcamStream = stream;
-            standaloneVideoEl.src = '';
+            standaloneVideoEl.pause();
+            standaloneVideoEl.removeAttribute('src');
             standaloneVideoEl.srcObject = stream;
+            standaloneVideoEl.muted = true;
+            standaloneVideoEl.playsInline = true;
+            standaloneVideoEl.setAttribute('playsinline', '');
+            standaloneVideoEl.setAttribute('autoplay', '');
             await standaloneVideoEl.play();
             if (btnWebcam) btnWebcam.className = 'btn btn-primary';
             if (btnTest) btnTest.className = 'btn btn-secondary';
-            showNotification('🎥 Live Device Camera Active & Counting (0s latency)!', 'success');
+            const camLabel = mobileCameraFacing === 'environment' ? 'Rear Camera' : 'Front Camera';
+            showNotification(`🎥 Live ${camLabel} Active! Tap Start Counting if paused.`, 'success');
         } catch (e) {
             console.error('Camera access error:', e);
-            showNotification('⚠️ Could not open device camera: ' + (e.message || 'Permission denied') + '. Using video file.', 'warning');
-            standaloneSource = 'file';
-            standaloneVideoEl.srcObject = null;
-            standaloneVideoEl.src = 'testing video.mp4';
-            standaloneVideoEl.load();
-            if (isStandaloneCounting) standaloneVideoEl.play().catch(err => console.log(err));
-            if (btnTest) btnTest.className = 'btn btn-primary';
-            if (btnWebcam) btnWebcam.className = 'btn btn-secondary';
+            const msg = (e && (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError'))
+                ? 'Camera permission blocked! Allow Camera in Chrome site settings (lock icon near URL).'
+                : ('Could not open device camera: ' + (e.message || 'Unavailable'));
+            showNotification('⚠️ ' + msg, 'warning');
         }
     }
     saveAppStateToStorage();
@@ -3885,28 +3921,20 @@ function detectGateLineMotion() {
                         const deltaY = activeGatePass.curY - activeGatePass.startY;
                         const deltaX = activeGatePass.curX - activeGatePass.startX;
 
-                        if (standaloneSource === 'webcam') {
-                            if (activeGatePass.hadDesk || deltaX > 0.04 || deltaY < -0.04) {
-                                dir = 'OUT';
-                            } else {
-                                dir = 'IN';
-                            }
-                        } else {
-                            const p4 = gatePolygon[3], p3 = gatePolygon[2];
-                            const tDx = p3.x - p4.x, tDy = p3.y - p4.y;
-                            const startSide = tDx * (activeGatePass.startY - p4.y) - tDy * (activeGatePass.startX - p4.x);
-                            const curSide = tDx * (activeGatePass.curY - p4.y) - tDy * (activeGatePass.curX - p4.x);
+                        const p4 = gatePolygon[3], p3 = gatePolygon[2];
+                        const tDx = p3.x - p4.x, tDy = p3.y - p4.y;
+                        const startSide = tDx * (activeGatePass.startY - p4.y) - tDy * (activeGatePass.startX - p4.x);
+                        const curSide = tDx * (activeGatePass.curY - p4.y) - tDy * (activeGatePass.curX - p4.x);
 
-                            if (startSide > 0 && curSide <= 0) {
-                                dir = 'OUT';
-                            } else if (startSide <= 0 && curSide > 0) {
-                                dir = 'IN';
-                            } else {
-                                dir = (deltaY < -0.02 || deltaX > 0.02) ? 'OUT' : 'IN';
-                            }
-                            if (flipGateDirection) {
-                                dir = (dir === 'IN') ? 'OUT' : 'IN';
-                            }
+                        if (startSide > 0 && curSide <= 0) {
+                            dir = 'OUT';
+                        } else if (startSide <= 0 && curSide > 0) {
+                            dir = 'IN';
+                        } else {
+                            dir = (deltaY < -0.02 || deltaX > 0.02) ? 'OUT' : 'IN';
+                        }
+                        if (flipGateDirection) {
+                            dir = (dir === 'IN') ? 'OUT' : 'IN';
                         }
 
                         const ident = evaluateCrossingIdentity(dir, activeGatePass.curX, activeGatePass.curY);
@@ -4054,7 +4082,65 @@ function captureUnknownBurstSequence(direction = 'IN', posX = 0.5, posY = 0.5, c
     }
 }
 
-function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null, cachedSnap = null) {
+async function triggerGateMotionCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null, cachedSnap = null) {
+    const isTestingVideo = (standaloneSource === 'file');
+
+    // If Live Webcam / Mobile Camera is active and a Cloud/Local AI Backend is connected,
+    // send the captured doorway frame to YOLOv8-pose + FaceEngine for 100% real Face ID!
+    if (!isTestingVideo && (backendAvailable || cloudBackendUrl) && standaloneVideoEl) {
+        try {
+            let frameUrl = cachedSnap && cachedSnap.fullUrl ? cachedSnap.fullUrl : null;
+            if (!frameUrl) {
+                const rawW = standaloneVideoEl.videoWidth || 640;
+                const rawH = standaloneVideoEl.videoHeight || 480;
+                const c = document.createElement('canvas');
+                c.width = 640;
+                c.height = Math.round(640 * (rawH / rawW)) || 360;
+                c.getContext('2d').drawImage(standaloneVideoEl, 0, 0, c.width, c.height);
+                frameUrl = c.toDataURL('image/jpeg', 0.88);
+            }
+            const fd = new FormData();
+            fd.append('image_base64', frameUrl);
+            fd.append('direction', direction);
+            fd.append('record_mode', 'live');
+
+            const controller = new AbortController();
+            const tid = setTimeout(() => controller.abort(), 3500);
+            const res = await fetch(getApiUrl('/api/tracking/analyze_mobile_frame'), {
+                method: 'POST',
+                body: fd,
+                signal: controller.signal
+            });
+            clearTimeout(tid);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.status === 'no_person') {
+                    console.log('[Mobile AI] Light/shadow flicker ignored — no person detected.');
+                    return;
+                }
+                if (data.is_registered && data.staff_code) {
+                    applyConfirmedGateCrossing(direction, posX, posY, false, data.staff_code, cachedSnap);
+                    fetchStats();
+                    fetchRecentEvents();
+                    fetchTodayReport();
+                    return;
+                } else if (data.status === 'success' && !data.is_registered) {
+                    applyConfirmedGateCrossing(direction, posX, posY, true, null, cachedSnap);
+                    fetchStats();
+                    fetchRecentEvents();
+                    fetchUnknowns();
+                    return;
+                }
+            }
+        } catch (err) {
+            console.warn('[Mobile AI] Backend unreachable, using local standalone detection:', err.message || err);
+        }
+    }
+
+    applyConfirmedGateCrossing(direction, posX, posY, isUnknown, targetStaffCode, cachedSnap);
+}
+
+function applyConfirmedGateCrossing(direction = 'IN', posX = 0.68, posY = 0.65, isUnknown = false, targetStaffCode = null, cachedSnap = null) {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
     const isInside = direction === 'IN';
     const isTestingVideo = (standaloneSource === 'file');
